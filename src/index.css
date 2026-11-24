@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+@layer base {
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+    font-family: 'Noto Sans KR', system-ui, -apple-system, sans-serif;
+    background-color: #12161c;
+    color: #f3efe6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  canvas {
+    touch-action: none;
+    display: block;
+  }
+}
+
+.font-display {
+  font-family: 'Cinzel', 'Noto Sans KR', serif;
+}
+
+.font-mono-num {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes floatUpFade {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 6px) scale(0.92);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(-50%, -6px) scale(1.04);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -44px) scale(0.96);
+  }
+}
+
+.animate-float-popup {
+  animation: floatUpFade 1.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}

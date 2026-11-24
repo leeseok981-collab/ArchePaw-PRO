@@ -1,0 +1,240 @@
+import {
+  ArmorId,
+  HotbarItemId,
+  HousingColorId,
+  HousingEdge,
+  HousingKind,
+  HousingMaterial,
+  Inventory,
+  PlayerClassId,
+  PlayerUpgrades,
+  ProficiencyId,
+  ProficiencyState,
+  QuestId,
+  SaveMetaSummary,
+  WarriorSkillId,
+  WeaponId,
+  WeatherKind,
+} from './types';
+
+export const SAVE_STORAGE_KEY = 'archepaw_world_save_v1';
+
+export interface SavedHousingItem {
+  id: string;
+  kind: HousingKind;
+  material: HousingMaterial;
+  color?: HousingColorId;
+  gx: number;
+  gz: number;
+  level: number;
+  edge: HousingEdge | null;
+  rotationStep: number;
+  rotationY?: number;
+  gridSnapped?: boolean;
+  freeX?: number;
+  freeZ?: number;
+  heightOffset?: number;
+  baseY: number;
+  isDoorOpen?: boolean;
+  durability?: number;
+  maxDurability?: number;
+  ownerId?: string;
+}
+
+export interface SavedLandPlot {
+  id: string;
+  x: number;
+  z: number;
+  radius: number;
+}
+
+export interface SavedLanternItem {
+  x: number;
+  z: number;
+  rotationY: number;
+}
+
+export interface SavedSaplingItem {
+  kind: 'oak_tree' | 'pine_tree' | 'birch_tree';
+  x: number;
+  z: number;
+  tier: number;
+  scale: number;
+  isDepleted: boolean;
+  regrowTimer: number;
+}
+
+export interface GameSaveData {
+  version: 2;
+  savedAt: number;
+  worldTier: number;
+  playerClass?: PlayerClassId;
+  player: {
+    x: number;
+    z: number;
+    yaw: number;
+    hp: number;
+    stamina: number;
+    level: number;
+    exp: number;
+    nextExp: number;
+  };
+  inventory: Inventory;
+  upgrades: PlayerUpgrades;
+  ownedWeapons: WeaponId[];
+  equippedWeapon: WeaponId;
+  ownedArmors: ArmorId[];
+  equippedArmor: ArmorId;
+  autoEquipTool: boolean;
+  hotbarSlots: HotbarItemId[];
+  stats: {
+    harvestedTotal: number;
+    plantedSaplings: number;
+    woodGathered: number;
+    stoneGathered: number;
+    ironGathered: number;
+    leatherGathered: number;
+    monstersDefeated: number;
+    bossesDefeated?: number;
+    trialTowerMaxFloor?: number;
+    observedNightWildlife: boolean;
+  };
+  skillMastery?: {
+    points: number;
+    ranks: Record<WarriorSkillId, number>;
+  };
+  proficiencies?: Record<ProficiencyId, ProficiencyState>;
+  claimedQuests: QuestId[];
+  environment: {
+    timeOfDay: number;
+    timePaused: boolean;
+    weather: WeatherKind;
+    autoWeather: boolean;
+    bgmEnabled: boolean;
+  };
+  housing: SavedHousingItem[];
+  claimedPlots?: SavedLandPlot[];
+  suppressedResourceIds?: string[];
+  lanterns: SavedLanternItem[];
+  saplings: SavedSaplingItem[];
+}
+
+const VALID_HOUSING_KINDS: HousingKind[] = [
+  'floor',
+  'wall',
+  'half_wall',
+  'fence',
+  'pillar',
+  'doorway',
+  'door',
+  'window_wall',
+  'ceiling',
+  'flat_roof',
+  'roof',
+  'stairs',
+  'wall_torch',
+  'ceiling_light',
+  'bed',
+  'chair',
+  'table',
+  'cabinet',
+];
+
+const VALID_HOUSING_MATERIALS: HousingMaterial[] = ['wood', 'stone', 'half_timber', 'iron_fort'];
+
+export const VALID_HOUSING_COLORS: HousingColorId[] = [
+  'natural',
+  'ivory',
+  'terracotta',
+  'cedar',
+  'sage',
+  'cobalt',
+  'charcoal',
+  'ochre',
+];
+
+export function isValidSavedTile(item: unknown): item is SavedHousingItem {
+  if (!item || typeof item !== 'object') return false;
+  const o = item as Record<string, unknown>;
+  return (
+    typeof o.id === 'string' &&
+    VALID_HOUSING_KINDS.includes(o.kind as HousingKind) &&
+    VALID_HOUSING_MATERIALS.includes(o.material as HousingMaterial) &&
+    typeof o.gx === 'number' &&
+    typeof o.gz === 'number' &&
+    typeof o.level === 'number' &&
+    typeof o.rotationStep === 'number' &&
+    typeof o.baseY === 'number'
+  );
+}
+
+export function isValidSaveData(raw: unknown): raw is GameSaveData {
+  if (!raw || typeof raw !== 'object') return false;
+  const obj = raw as Record<string, unknown>;
+  if (obj.version !== 2 && obj.version !== 1) return false;
+  if (typeof obj.savedAt !== 'number') return false;
+  if (typeof obj.worldTier !== 'number' || obj.worldTier < 1 || obj.worldTier > 3) return false;
+  if (!obj.player || typeof obj.player !== 'object') return false;
+  if (!obj.inventory || typeof obj.inventory !== 'object') return false;
+  if (!Array.isArray(obj.housing)) return false;
+  return true;
+}
+
+export function saveGameToStorage(data: GameSaveData): boolean {
+  try {
+    window.localStorage.setItem(SAVE_STORAGE_KEY, JSON.stringify(data));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function loadGameFromStorage(): GameSaveData | null {
+  try {
+    const raw = window.localStorage.getItem(SAVE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isValidSaveData(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearSavedGame(): void {
+  try {
+    window.localStorage.removeItem(SAVE_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function getSaveSummary(): SaveMetaSummary | null {
+  const data = loadGameFromStorage();
+  if (!data) return null;
+  return {
+    savedAt: data.savedAt,
+    worldTier: data.worldTier,
+    level: data.player.level,
+    housingCount: data.housing.length,
+    playerClass: data.playerClass || 'warrior',
+  };
+}
+
+export function formatSavedTime(timestamp: number | null): string {
+  if (!timestamp) return '';
+  const d = new Date(timestamp);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+export function formatSavedDateTime(timestamp: number | null): string {
+  if (!timestamp) return '';
+  const d = new Date(timestamp);
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${mo}/${da} ${hh}:${mm}`;
+}
