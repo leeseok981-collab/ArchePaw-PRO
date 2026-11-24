@@ -15,9 +15,11 @@ import {
   Wand2,
 } from 'lucide-react';
 import { getClassSkillsCatalog, HudSnapshot, WarriorSkillId } from '../game/types';
+import { MobileUiScale } from '../game/userConfig';
 
 interface MobileControlsProps {
   hud: HudSnapshot;
+  uiScale?: MobileUiScale;
   onMoveInput: (right: number, forward: number, sprint: boolean) => void;
   onJump: () => void;
   onAction: () => void;
@@ -28,11 +30,15 @@ interface MobileControlsProps {
   onExitHousing: () => void;
 }
 
-const PAD_RADIUS = 50;
-const KNOB_MAX = 38;
-
+/**
+ * Clean, ergonomic mobile touch overlay:
+ * - Left: Minimalist translucent virtual joystick with outer-ring auto-sprint lock.
+ * - Right: Curved thumb-arc skill buttons wrapping smoothly around primary Attack/Action & Jump.
+ * - Respects safe-area-insets and keeps the center viewport completely unobstructed.
+ */
 export const MobileControls: React.FC<MobileControlsProps> = ({
   hud,
+  uiScale = 'compact',
   onMoveInput,
   onJump,
   onAction,
@@ -42,6 +48,12 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   onRotateHousing,
   onExitHousing,
 }) => {
+  const isCompact = uiScale === 'compact';
+  const padSize = isCompact ? 96 : 112;
+  const knobSize = isCompact ? 38 : 44;
+  const padRadius = padSize * 0.5;
+  const knobMax = isCompact ? 31 : 37;
+
   const padRef = useRef<HTMLDivElement | null>(null);
   const joyPointerIdRef = useRef<number | null>(null);
   const [knobPos, setKnobPos] = useState<{ x: number; y: number; sprinting: boolean; active: boolean }>({
@@ -56,38 +68,35 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
       const el = padRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
+      const cx = rect.left + rect.width * 0.5;
+      const cy = rect.top + rect.height * 0.5;
       const dx = clientX - cx;
       const dy = clientY - cy;
       const dist = Math.hypot(dx, dy);
-      const clamped = Math.min(dist, KNOB_MAX);
-      const nx = dist > 0.001 ? (dx / dist) * (clamped / KNOB_MAX) : 0;
-      const ny = dist > 0.001 ? (dy / dist) * (clamped / KNOB_MAX) : 0;
-      const mag = Math.hypot(nx, ny);
-      const deadzone = 0.12;
-      const effRight = mag < deadzone ? 0 : nx;
-      const effForward = mag < deadzone ? 0 : -ny;
-      const sprinting = mag > 0.84;
+      const clamped = Math.min(dist, knobMax);
+      const angle = Math.atan2(dy, dx);
+      const kx = dist > 0.001 ? Math.cos(angle) * clamped : 0;
+      const ky = dist > 0.001 ? Math.sin(angle) * clamped : 0;
 
-      setKnobPos({
-        x: (dx / Math.max(dist, 0.001)) * clamped,
-        y: (dy / Math.max(dist, 0.001)) * clamped,
-        sprinting,
-        active: true,
-      });
-      onMoveInput(effRight, effForward, sprinting);
+      const norm = clamped / knobMax;
+      const deadzone = 0.14;
+      if (norm < deadzone) {
+        setKnobPos({ x: kx, y: ky, sprinting: false, active: true });
+        onMoveInput(0, 0, false);
+        return;
+      }
+
+      const scaled = (norm - deadzone) / (1 - deadzone);
+      const right = Math.cos(angle) * scaled;
+      const forward = -Math.sin(angle) * scaled;
+      const sprinting = norm > 0.84;
+      setKnobPos({ x: kx, y: ky, sprinting, active: true });
+      onMoveInput(right, forward, sprinting);
     },
-    [onMoveInput],
+    [knobMax, onMoveInput],
   );
 
-  const resetJoystick = useCallback(() => {
-    joyPointerIdRef.current = null;
-    setKnobPos({ x: 0, y: 0, sprinting: false, active: false });
-    onMoveInput(0, 0, false);
-  }, [onMoveInput]);
-
-  const handleJoyPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+  const handleJoyDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.stopPropagation();
     if (joyPointerIdRef.current !== null) return;
     joyPointerIdRef.current = e.pointerId;
@@ -95,246 +104,346 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
     updateJoystickFromClient(e.clientX, e.clientY);
   };
 
-  const handleJoyPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+  const handleJoyMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (joyPointerIdRef.current !== e.pointerId) return;
     e.stopPropagation();
     updateJoystickFromClient(e.clientX, e.clientY);
   };
 
-  const handleJoyPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+  const handleJoyUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (joyPointerIdRef.current !== e.pointerId) return;
     e.stopPropagation();
-    resetJoystick();
+    joyPointerIdRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    setKnobPos({ x: 0, y: 0, sprinting: false, active: false });
+    onMoveInput(0, 0, false);
   };
 
-  const isHousing = hud.housing.mode !== 'off';
-  const isPlacingOrMoving = hud.housing.mode === 'placing' || hud.housing.mode === 'moving';
-
+  const housingActive = hud.housing.mode !== 'off';
   const classSkills = getClassSkillsCatalog(hud.playerClass);
-  const renderMobileSkillIcon = (id: WarriorSkillId) => {
+  const actionLabel = hud.nearbyHint ? '채집' : '공격';
+
+  const renderSkillIcon = (id: WarriorSkillId) => {
+    const iconCls = isCompact ? 'w-3.5 h-3.5' : 'w-4 h-4';
     if (hud.playerClass === 'archer') {
-      if (id === 'whirlwind') return <Crosshair className="w-4 h-4" />;
-      if (id === 'vanguard_dash') return <Zap className="w-4 h-4" />;
-      if (id === 'earthbreaker') return <Sparkles className="w-4 h-4" />;
-      return <Shield className="w-4 h-4" />;
-    }
-    if (hud.playerClass === 'healer') {
-      if (id === 'whirlwind') return <Sparkles className="w-4 h-4" />;
-      if (id === 'vanguard_dash') return <Heart className="w-4 h-4" />;
-      if (id === 'earthbreaker') return <Wind className="w-4 h-4" />;
-      return <Shield className="w-4 h-4" />;
+      switch (id) {
+        case 'whirlwind':
+          return <Crosshair className={iconCls} />;
+        case 'vanguard_dash':
+          return <Wind className={iconCls} />;
+        case 'earthbreaker':
+          return <Zap className={iconCls} />;
+        case 'warcry':
+          return <Sparkles className={iconCls} />;
+      }
     }
     if (hud.playerClass === 'mage') {
-      if (id === 'whirlwind') return <Wand2 className="w-4 h-4" />;
-      if (id === 'vanguard_dash') return <Wind className="w-4 h-4" />;
-      if (id === 'earthbreaker') return <Sparkles className="w-4 h-4" />;
-      return <Shield className="w-4 h-4" />;
+      switch (id) {
+        case 'whirlwind':
+          return <Wand2 className={iconCls} />;
+        case 'vanguard_dash':
+          return <Sparkles className={iconCls} />;
+        case 'earthbreaker':
+          return <Zap className={iconCls} />;
+        case 'warcry':
+          return <Shield className={iconCls} />;
+      }
     }
-    if (hud.playerClass === 'rogue') {
-      if (id === 'whirlwind') return <Swords className="w-4 h-4" />;
-      if (id === 'vanguard_dash') return <Zap className="w-4 h-4" />;
-      if (id === 'earthbreaker') return <Sparkles className="w-4 h-4" />;
-      return <Shield className="w-4 h-4" />;
+    if (hud.playerClass === 'healer') {
+      switch (id) {
+        case 'whirlwind':
+          return <Heart className={iconCls} />;
+        case 'vanguard_dash':
+          return <Wind className={iconCls} />;
+        case 'earthbreaker':
+          return <Zap className={iconCls} />;
+        case 'warcry':
+          return <Sparkles className={iconCls} />;
+      }
     }
-    if (id === 'whirlwind') return <Wind className="w-4 h-4" />;
-    if (id === 'vanguard_dash') return <Zap className="w-4 h-4" />;
-    if (id === 'earthbreaker') return <Sparkles className="w-4 h-4" />;
-    return <Shield className="w-4 h-4" />;
+    switch (id) {
+      case 'whirlwind':
+        return <Wind className={iconCls} />;
+      case 'vanguard_dash':
+        return <Zap className={iconCls} />;
+      case 'earthbreaker':
+        return <Swords className={iconCls} />;
+      case 'warcry':
+        return <Shield className={iconCls} />;
+    }
   };
 
-  const skillMeta = classSkills.map((spec) => ({
-    id: spec.id,
-    label: spec.shortName.slice(0, 3),
-    icon: renderMobileSkillIcon(spec.id),
-    accentHex: spec.accentHex,
-  }));
+  // Curved ergonomic skill arc positions anchored around the bottom-right primary Attack button
+  const primarySize = isCompact ? 58 : 66;
+  const jumpSize = isCompact ? 46 : 52;
+  const skillSize = isCompact ? 40 : 44;
+  const housingBtnSize = isCompact ? 36 : 40;
+  const arcRadius = isCompact ? 76 : 88;
+  // 4 skills spread evenly along a graceful 105°..185° quarter-arc above-left of the primary button
+  const arcAnglesDeg = [190, 160, 130, 100];
 
-  const actionText = hud.nearbyHint
-    ? hud.nearbyHint.kind === 'monster'
-      ? '공격'
-      : hud.nearbyHint.actionLabel.slice(0, 3)
-    : '행동';
+  const bottomOffset = isCompact
+    ? 'calc(44px + env(safe-area-inset-bottom, 0px))'
+    : 'calc(52px + env(safe-area-inset-bottom, 0px))';
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-20 select-none">
-      {/* Left Thumb Analog Virtual Joystick */}
+    <div className="fixed inset-0 z-15 pointer-events-none select-none">
+      {/* LEFT THUMB ZONE: Minimalist Virtual Joystick */}
       <div
-        ref={padRef}
-        onPointerDown={handleJoyPointerDown}
-        onPointerMove={handleJoyPointerMove}
-        onPointerUp={handleJoyPointerUp}
-        onPointerCancel={handleJoyPointerUp}
+        className="absolute pointer-events-auto flex flex-col items-center gap-1.5"
         style={{
-          width: PAD_RADIUS * 2 + 16,
-          height: PAD_RADIUS * 2 + 16,
-          touchAction: 'none',
+          left: 'max(14px, env(safe-area-inset-left, 0px))',
+          bottom: bottomOffset,
         }}
-        className={`pointer-events-auto fixed left-4 ${
-          isHousing ? 'bottom-32' : 'bottom-5'
-        } rounded-full border-2 flex items-center justify-center transition-colors ${
-          knobPos.sprinting
-            ? 'border-amber-400/80 bg-[#151b24]/70'
-            : knobPos.active
-              ? 'border-teal-300/75 bg-[#151b24]/65'
-              : 'border-white/25 bg-[#121720]/50'
-        }`}
-        aria-label="이동 조이스틱"
       >
-        <div className="w-20 h-20 rounded-full border border-dashed border-white/15 pointer-events-none" />
+        {/* Subtle sprint state indicator only while sprinting */}
         <div
-          style={{
-            transform: `translate3d(${knobPos.x}px, ${knobPos.y}px, 0)`,
-          }}
-          className={`absolute w-12 h-12 rounded-full border-2 shadow-lg pointer-events-none flex items-center justify-center ${
+          className={`h-4 px-2 rounded-full text-[9px] font-bold tracking-wider transition-opacity duration-150 ${
             knobPos.sprinting
-              ? 'bg-amber-400/90 border-amber-100 text-[#1a1308]'
-              : 'bg-[#2a3647]/90 border-white/65 text-white'
+              ? 'opacity-100 bg-[#0d1824]/85 border border-[#62e5ff]/55 text-[#7dd3fc]'
+              : 'opacity-0 pointer-events-none'
           }`}
         >
-          <span className="text-[10px] font-bold tracking-tight">
-            {knobPos.sprinting ? '질주' : '이동'}
-          </span>
+          질주
+        </div>
+
+        <div
+          ref={padRef}
+          onPointerDown={handleJoyDown}
+          onPointerMove={handleJoyMove}
+          onPointerUp={handleJoyUp}
+          onPointerCancel={handleJoyUp}
+          aria-label="이동 조이스틱"
+          style={{
+            width: padSize,
+            height: padSize,
+            touchAction: 'none',
+          }}
+          className={`relative rounded-full transition-colors ${
+            knobPos.sprinting
+              ? 'bg-[#0e1b28]/62 border border-[#62e5ff]/60'
+              : knobPos.active
+                ? 'bg-[#0d131c]/58 border border-white/28'
+                : 'bg-[#0c1118]/44 border border-white/16'
+          }`}
+        >
+          {/* Minimal 4-way directional ticks */}
+          <span className="absolute top-2 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-white/30" />
+          <span className="absolute bottom-2 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-white/30" />
+          <span className="absolute left-2 top-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-white/30" />
+          <span className="absolute right-2 top-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-white/30" />
+
+          {/* Smooth responsive thumb knob */}
+          <div
+            style={{
+              width: knobSize,
+              height: knobSize,
+              left: padRadius - knobSize * 0.5,
+              top: padRadius - knobSize * 0.5,
+              transform: `translate3d(${knobPos.x}px, ${knobPos.y}px, 0)`,
+            }}
+            className={`absolute rounded-full border transition-colors ${
+              knobPos.sprinting
+                ? 'bg-[#62e5ff]/90 border-white shadow-[0_0_12px_rgba(98,229,255,0.55)]'
+                : knobPos.active
+                  ? 'bg-white/88 border-white shadow-md'
+                  : 'bg-white/35 border-white/45'
+            }`}
+          />
         </div>
       </div>
 
-      {/* Right Thumb Action Cluster */}
-      <div
-        className={`pointer-events-auto fixed right-4 ${
-          isHousing ? 'bottom-32' : 'bottom-5'
-        } flex flex-col items-end gap-2.5`}
-        style={{ touchAction: 'none' }}
-      >
-        {isHousing ? (
-          /* Housing Touch Quick Controls */
-          <div className="flex flex-col items-end gap-2">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  onRotateHousing();
-                }}
-                className="w-12 h-12 rounded-full bg-[#1a2230]/90 border border-amber-300/50 text-amber-200 flex flex-col items-center justify-center shadow-lg active:scale-95"
-              >
-                <RotateCw className="w-4 h-4" />
-                <span className="text-[9px] font-bold mt-0.5">회전</span>
-              </button>
-              <button
-                type="button"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  onExitHousing();
-                }}
-                className="w-12 h-12 rounded-full bg-[#2a181c]/90 border border-rose-400/55 text-rose-200 flex flex-col items-center justify-center shadow-lg active:scale-95"
-              >
-                <X className="w-4 h-4" />
-                <span className="text-[9px] font-bold mt-0.5">종료</span>
-              </button>
-            </div>
+      {/* RIGHT THUMB ZONE: Curved Action & Skill Cluster */}
+      {!housingActive ? (
+        <div
+          className="absolute pointer-events-none"
+          style={{
+            right: 'max(14px, env(safe-area-inset-right, 0px))',
+            bottom: bottomOffset,
+            width: arcRadius + primarySize + 24,
+            height: arcRadius + primarySize + 28,
+          }}
+        >
+          {/* 4 Class Skills arranged along a clean curved thumb-arc */}
+          {classSkills.map((meta, idx) => {
+            const st = hud.warriorSkills.find((s) => s.id === meta.id);
+            const onCd = Boolean(st && st.cooldownRemaining > 0.05);
+            const lowStam = hud.stamina < meta.staminaCost;
+            const disabled = onCd || lowStam;
+            const deg = arcAnglesDeg[idx] ?? 140;
+            const rad = (deg * Math.PI) / 180;
+            // Anchor center around primary attack button (bottom-right)
+            const centerRight = primarySize * 0.5;
+            const centerBottom = primarySize * 0.5;
+            const offsetRight = centerRight - Math.cos(rad) * arcRadius - skillSize * 0.5;
+            const offsetBottom = centerBottom + Math.sin(rad) * arcRadius - skillSize * 0.5;
 
-            <div className="flex items-center gap-2.5">
+            return (
               <button
+                key={meta.id}
                 type="button"
+                disabled={disabled}
                 onPointerDown={(e) => {
                   e.stopPropagation();
-                  onJump();
+                  e.preventDefault();
+                  if (!disabled) onCastSkill(meta.id);
                 }}
-                className="w-12 h-12 rounded-full bg-[#1a2230]/90 border border-white/30 text-slate-100 flex flex-col items-center justify-center shadow-lg active:scale-95"
+                aria-label={meta.name}
+                style={{
+                  width: skillSize,
+                  height: skillSize,
+                  right: offsetRight,
+                  bottom: offsetBottom,
+                  borderColor: disabled ? 'rgba(255,255,255,0.12)' : `${meta.accentHex}88`,
+                  color: disabled ? '#64748b' : meta.accentHex,
+                  touchAction: 'none',
+                }}
+                className={`pointer-events-auto absolute rounded-full border flex flex-col items-center justify-center transition-transform active:scale-90 ${
+                  disabled
+                    ? 'bg-[#0d121a]/62 opacity-65'
+                    : 'bg-[#0e1520]/80 shadow-md cursor-pointer'
+                }`}
               >
-                <ArrowUp className="w-4 h-4" />
-                <span className="text-[9px] font-bold">점프</span>
+                {onCd && st ? (
+                  <span className="text-[11px] font-mono-num font-bold text-[#e2e8f0]">
+                    {st.cooldownRemaining.toFixed(0)}
+                  </span>
+                ) : (
+                  renderSkillIcon(meta.id)
+                )}
               </button>
-              {isPlacingOrMoving && (
-                <button
-                  type="button"
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    onConfirmHousing();
-                  }}
-                  className="w-16 h-16 rounded-full bg-emerald-600/95 border-2 border-emerald-200 text-white flex flex-col items-center justify-center shadow-xl active:scale-95"
-                >
-                  <Check className="w-6 h-6" />
-                  <span className="text-[11px] font-bold">설치</span>
-                </button>
-              )}
-            </div>
+            );
+          })}
+
+          {/* Compact Housing Toggle tucked neatly at the top-right edge */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onToggleHousing();
+            }}
+            aria-label="건축 모드"
+            style={{
+              width: housingBtnSize,
+              height: housingBtnSize,
+              right: 2,
+              bottom: primarySize + jumpSize + 18,
+              touchAction: 'none',
+            }}
+            className="pointer-events-auto absolute rounded-full bg-[#0e1520]/76 border border-white/18 text-[#5df7d4] flex items-center justify-center shadow-md active:scale-90 cursor-pointer"
+          >
+            <Hammer className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Jump Button tucked right above primary Attack */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onJump();
+            }}
+            aria-label="점프"
+            style={{
+              width: jumpSize,
+              height: jumpSize,
+              right: 0,
+              bottom: primarySize + 10,
+              touchAction: 'none',
+            }}
+            className="pointer-events-auto absolute rounded-full bg-[#0e1520]/80 border border-white/22 text-[#e2f2ff] flex items-center justify-center shadow-md active:scale-90 cursor-pointer"
+          >
+            <ArrowUp className={isCompact ? 'w-4 h-4' : 'w-5 h-5'} />
+          </button>
+
+          {/* Primary Attack / Gather Button in natural right-thumb resting corner */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onAction();
+            }}
+            aria-label={actionLabel}
+            style={{
+              width: primarySize,
+              height: primarySize,
+              right: 0,
+              bottom: 0,
+              touchAction: 'none',
+            }}
+            className={`pointer-events-auto absolute rounded-full border-2 flex flex-col items-center justify-center shadow-lg active:scale-92 transition-transform cursor-pointer ${
+              hud.nearbyHint
+                ? 'bg-[#12332a]/90 border-[#38f2c8]/80 text-[#7cf7dc]'
+                : 'bg-[#1f1910]/88 border-[#f0c048]/80 text-[#fde68a]'
+            }`}
+          >
+            {hud.nearbyHint ? (
+              <Sparkles className={isCompact ? 'w-5 h-5' : 'w-6 h-6'} />
+            ) : (
+              <Swords className={isCompact ? 'w-5 h-5' : 'w-6 h-6'} />
+            )}
+            <span className="text-[9px] font-bold leading-none mt-0.5 tracking-tight">
+              {actionLabel}
+            </span>
+          </button>
+        </div>
+      ) : (
+        /* CLEAN HOUSING BUILDER TOUCH CLUSTER */
+        <div
+          className="absolute pointer-events-auto flex flex-col items-end gap-2"
+          style={{
+            right: 'max(14px, env(safe-area-inset-right, 0px))',
+            bottom: bottomOffset,
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onRotateHousing();
+              }}
+              aria-label="90도 회전"
+              style={{ width: 44, height: 44, touchAction: 'none' }}
+              className="rounded-full bg-[#0e1520]/84 border border-white/22 text-[#e2e8f0] flex items-center justify-center shadow-md active:scale-90 cursor-pointer"
+            >
+              <RotateCw className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onExitHousing();
+              }}
+              aria-label="건축 종료"
+              style={{ width: 44, height: 44, touchAction: 'none' }}
+              className="rounded-full bg-[#2a1519]/88 border border-[#f87171]/60 text-[#fca5a5] flex items-center justify-center shadow-md active:scale-90 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
-        ) : (
-          /* Combat, Gathering & Exploration Touch Cluster */
-          <>
-            {/* Warrior Skill Arc (44px+ buttons) */}
-            <div className="flex items-center gap-1.5">
-              {skillMeta.map((sk) => {
-                const snap = hud.warriorSkills.find((s) => s.id === sk.id);
-                const cd = snap?.cooldownRemaining ?? 0;
-                const onCd = cd > 0.05;
-                return (
-                  <button
-                    key={sk.id}
-                    type="button"
-                    onPointerDown={(e) => {
-                      e.stopPropagation();
-                      if (!onCd) onCastSkill(sk.id);
-                    }}
-                    className={`relative w-11 h-11 rounded-full bg-[#161d28]/90 border flex flex-col items-center justify-center shadow-md active:scale-95 ${
-                      onCd ? 'border-white/15 text-slate-500' : 'text-[#f7f3ea]'
-                    }`}
-                    style={
-                      !onCd
-                        ? { borderColor: `${sk.accentHex}99`, color: sk.accentHex }
-                        : undefined
-                    }
-                  >
-                    {sk.icon}
-                    <span className="text-[9px] font-bold leading-none mt-0.5">
-                      {onCd ? `${Math.ceil(cd)}s` : sk.label}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Primary Thumb Buttons: Build, Jump, Attack/Gather */}
-            <div className="flex items-end gap-2.5">
-              <button
-                type="button"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  onToggleHousing();
-                }}
-                className="w-12 h-12 rounded-full bg-[#1d2533]/90 border border-amber-400/55 text-amber-200 flex flex-col items-center justify-center shadow-lg active:scale-95"
-              >
-                <Hammer className="w-4 h-4" />
-                <span className="text-[9px] font-bold mt-0.5">건축</span>
-              </button>
-
-              <button
-                type="button"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  onJump();
-                }}
-                className="w-13 h-13 rounded-full bg-[#1a2433]/90 border border-sky-300/50 text-sky-100 flex flex-col items-center justify-center shadow-lg active:scale-95"
-              >
-                <ArrowUp className="w-5 h-5" />
-                <span className="text-[10px] font-bold leading-none">점프</span>
-              </button>
-
-              <button
-                type="button"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  onAction();
-                }}
-                className="w-16 h-16 rounded-full bg-amber-500/95 border-2 border-amber-100 text-[#1b1206] flex flex-col items-center justify-center shadow-xl active:scale-95"
-              >
-                <Swords className="w-6 h-6" />
-                <span className="text-[11px] font-extrabold leading-tight">{actionText}</span>
-              </button>
-            </div>
-          </>
-        )}
-      </div>
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onConfirmHousing();
+            }}
+            aria-label="배치 확정"
+            style={{ width: 58, height: 58, touchAction: 'none' }}
+            className="rounded-full bg-[#0f382e]/92 border-2 border-[#38f2c8]/85 text-[#7cf7dc] flex flex-col items-center justify-center shadow-lg active:scale-92 cursor-pointer"
+          >
+            <Check className="w-5 h-5" />
+            <span className="text-[9px] font-bold leading-none mt-0.5">배치</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 };

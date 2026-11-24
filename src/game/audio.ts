@@ -84,12 +84,36 @@ export class SoundEngine {
   private ctx: AudioContext | null = null;
   private muted = false;
   private bgmEnabled = true;
+  private masterVolume = 0.9;
+  private bgmVolume = 0.75;
+  private sfxVolume = 0.9;
   private noiseBuffer: AudioBuffer | null = null;
 
   private rainSource: AudioBufferSourceNode | null = null;
   private rainGain: GainNode | null = null;
   private rainFilter: BiquadFilterNode | null = null;
   private targetRainLevel = 0;
+
+  // Spatial waterfall + dynamic wind + time-of-day forest ambience loops
+  private waterfallSource: AudioBufferSourceNode | null = null;
+  private waterfallLowFilter: BiquadFilterNode | null = null;
+  private waterfallSprayFilter: BiquadFilterNode | null = null;
+  private waterfallGain: GainNode | null = null;
+  private currentWaterfallLevel = 0;
+
+  private windSource: AudioBufferSourceNode | null = null;
+  private windFilter: BiquadFilterNode | null = null;
+  private windGain: GainNode | null = null;
+  private currentWindLevel = 0;
+
+  private forestSource: AudioBufferSourceNode | null = null;
+  private forestFilter: BiquadFilterNode | null = null;
+  private forestGain: GainNode | null = null;
+  private currentForestLevel = 0;
+
+  private forestCricketTimer = 2.2;
+  private forestOwlTimer = 11.5;
+  private forestDayBirdTimer = 4.5;
 
   // Adaptive Day/Night BGM graph
   private bgmMasterGain: GainNode | null = null;
@@ -420,10 +444,51 @@ export class SoundEngine {
 
     if (!this.ctx || !this.bgmMasterGain || !this.bgmDayGain || !this.bgmNightGain) return;
     const now = this.ctx.currentTime;
-    const targetMaster = !this.muted && this.bgmEnabled && this.bgmStarted ? 0.56 * this.bgmDuckFactor : 0.0001;
+    const targetMaster =
+      !this.muted && this.bgmEnabled && this.bgmStarted
+        ? Math.max(0.0001, 0.56 * this.bgmDuckFactor * this.masterVolume * this.bgmVolume)
+        : 0.0001;
     this.bgmMasterGain.gain.setTargetAtTime(targetMaster, now, 0.45);
     this.bgmDayGain.gain.setTargetAtTime(1 - this.currentNightFactor, now, 0.85);
     this.bgmNightGain.gain.setTargetAtTime(this.currentNightFactor, now, 0.85);
+  }
+
+  public setVolumes(master: number, bgm: number, sfx: number): void {
+    this.masterVolume = Math.max(0, Math.min(1, master));
+    this.bgmVolume = Math.max(0, Math.min(1, bgm));
+    this.sfxVolume = Math.max(0, Math.min(1, sfx));
+    if (this.ctx) {
+      const now = this.ctx.currentTime;
+      if (this.bgmMasterGain) {
+        const target =
+          !this.muted && this.bgmEnabled && this.bgmStarted
+            ? Math.max(0.0001, 0.56 * this.bgmDuckFactor * this.masterVolume * this.bgmVolume)
+            : 0.0001;
+        this.bgmMasterGain.gain.setTargetAtTime(target, now, 0.12);
+      }
+      if (this.rainGain) {
+        const rainVol = this.muted ? 0 : this.targetRainLevel * this.masterVolume * this.sfxVolume;
+        this.rainGain.gain.setTargetAtTime(rainVol, now, 0.15);
+      }
+      const sfxScale = this.muted ? 0 : this.masterVolume * this.sfxVolume;
+      if (this.waterfallGain) {
+        this.waterfallGain.gain.setTargetAtTime(this.currentWaterfallLevel * sfxScale, now, 0.12);
+      }
+      if (this.windGain) {
+        this.windGain.gain.setTargetAtTime(this.currentWindLevel * sfxScale, now, 0.15);
+      }
+      if (this.forestGain) {
+        this.forestGain.gain.setTargetAtTime(this.currentForestLevel * sfxScale, now, 0.15);
+      }
+    }
+  }
+
+  public setBgmEnabled(enabled: boolean): void {
+    this.bgmEnabled = enabled;
+    if (this.bgmEnabled && this.bgmStarted) {
+      this.ensureBgmGraph();
+    }
+    this.updateBgm(this.currentNightFactor, true);
   }
 
   public startBgm(): void {
@@ -451,11 +516,31 @@ export class SoundEngine {
   public setMuted(muted: boolean): void {
     this.muted = muted;
     if (this.rainGain && this.ctx) {
-      this.rainGain.gain.setTargetAtTime(muted ? 0 : this.targetRainLevel, this.ctx.currentTime, 0.15);
+      this.rainGain.gain.setTargetAtTime(
+        muted ? 0 : this.targetRainLevel * this.masterVolume * this.sfxVolume,
+        this.ctx.currentTime,
+        0.15,
+      );
     }
     if (this.bgmMasterGain && this.ctx) {
-      const target = !muted && this.bgmEnabled && this.bgmStarted ? 0.56 * this.bgmDuckFactor : 0.0001;
+      const target =
+        !muted && this.bgmEnabled && this.bgmStarted
+          ? Math.max(0.0001, 0.56 * this.bgmDuckFactor * this.masterVolume * this.bgmVolume)
+          : 0.0001;
       this.bgmMasterGain.gain.setTargetAtTime(target, this.ctx.currentTime, 0.18);
+    }
+    if (this.ctx) {
+      const now = this.ctx.currentTime;
+      const sfxScale = muted ? 0 : this.masterVolume * this.sfxVolume;
+      if (this.waterfallGain) {
+        this.waterfallGain.gain.setTargetAtTime(this.currentWaterfallLevel * sfxScale, now, 0.12);
+      }
+      if (this.windGain) {
+        this.windGain.gain.setTargetAtTime(this.currentWindLevel * sfxScale, now, 0.15);
+      }
+      if (this.forestGain) {
+        this.forestGain.gain.setTargetAtTime(this.currentForestLevel * sfxScale, now, 0.15);
+      }
     }
   }
 
@@ -503,16 +588,332 @@ export class SoundEngine {
 
   public setRainAmbience(intensity: number): void {
     this.targetRainLevel = Math.max(0, Math.min(1, intensity)) * 0.085;
-    if (this.muted || !this.ctx) return;
+    if (this.muted || !this.ctx || this.masterVolume * this.sfxVolume <= 0.01) return;
 
     if (this.targetRainLevel > 0.002 && !this.rainSource) {
       this.ensureRainLoop();
     }
     if (this.rainGain && this.rainFilter) {
       const now = this.ctx.currentTime;
-      this.rainGain.gain.setTargetAtTime(this.targetRainLevel, now, 0.35);
+      this.rainGain.gain.setTargetAtTime(
+        this.targetRainLevel * this.masterVolume * this.sfxVolume,
+        now,
+        0.35,
+      );
       this.rainFilter.frequency.setTargetAtTime(intensity > 0.7 ? 950 : 1450, now, 0.4);
     }
+  }
+
+  private ensureNatureLoops(): void {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state !== 'running' || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+
+    // 1. Spatial Waterfall loop: deep water plunge rumble + bright cascading mist spray
+    if (!this.waterfallSource) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      src.loop = true;
+
+      const lowLp = ctx.createBiquadFilter();
+      lowLp.type = 'lowpass';
+      lowLp.frequency.setValueAtTime(520, now);
+      lowLp.Q.setValueAtTime(0.65, now);
+
+      const sprayBp = ctx.createBiquadFilter();
+      sprayBp.type = 'bandpass';
+      sprayBp.frequency.setValueAtTime(2150, now);
+      sprayBp.Q.setValueAtTime(0.7, now);
+
+      const lowMix = ctx.createGain();
+      lowMix.gain.setValueAtTime(0.75, now);
+      const sprayMix = ctx.createGain();
+      sprayMix.gain.setValueAtTime(0.45, now);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+
+      src.connect(lowLp);
+      lowLp.connect(lowMix);
+      lowMix.connect(gain);
+
+      src.connect(sprayBp);
+      sprayBp.connect(sprayMix);
+      sprayMix.connect(gain);
+
+      gain.connect(ctx.destination);
+      src.start(now, 0.15);
+
+      this.waterfallSource = src;
+      this.waterfallLowFilter = lowLp;
+      this.waterfallSprayFilter = sprayBp;
+      this.waterfallGain = gain;
+    }
+
+    // 2. Dynamic Wind loop: sweeping resonant bandpass air gust
+    if (!this.windSource) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      src.loop = true;
+
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(380, now);
+      bp.Q.setValueAtTime(2.6, now);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+
+      src.connect(bp);
+      bp.connect(gain);
+      gain.connect(ctx.destination);
+      src.start(now, 0.72);
+
+      this.windSource = src;
+      this.windFilter = bp;
+      this.windGain = gain;
+    }
+
+    // 3. Time-of-day Forest Canopy rustle loop
+    if (!this.forestSource) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      src.loop = true;
+
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(2550, now);
+      bp.Q.setValueAtTime(1.15, now);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+
+      src.connect(bp);
+      bp.connect(gain);
+      gain.connect(ctx.destination);
+      src.start(now, 1.35);
+
+      this.forestSource = src;
+      this.forestFilter = bp;
+      this.forestGain = gain;
+    }
+  }
+
+  /**
+   * Updates continuous spatial waterfall volume (by 3D camera distance),
+   * wind swoosh, and time-of-day forest ambience (day rustle/birds, night crickets/owl).
+   * Zero per-frame audio-node allocations.
+   */
+  public updateNatureAmbience(params: {
+    dt: number;
+    elapsed: number;
+    waterfallDist: number;
+    windStrength: number;
+    nightFactor: number;
+    rainBlend: number;
+    active: boolean;
+  }): void {
+    const { dt, elapsed, waterfallDist, windStrength, nightFactor, rainBlend, active } = params;
+    const sfxScale = this.muted || !active ? 0 : this.masterVolume * this.sfxVolume;
+
+    // 1. Waterfall spatial distance attenuation (full at <= 10m, smooth quadratic rolloff to 0 at 72m)
+    const clampedDist = Math.max(0, waterfallDist);
+    const proximity =
+      clampedDist <= 10
+        ? 1
+        : clampedDist >= 72
+          ? 0
+          : Math.pow(1 - (clampedDist - 10) / 62, 2);
+    this.currentWaterfallLevel = proximity * 0.23;
+
+    // 2. Wind intensity with slow organic gust swell
+    const gust = 0.55 + 0.45 * Math.sin(elapsed * 0.37) * Math.cos(elapsed * 0.19);
+    const windNorm = Math.max(0.12, Math.min(1.3, windStrength));
+    this.currentWindLevel = (0.012 + windNorm * 0.042 * (0.72 + gust * 0.45));
+
+    // 3. Forest canopy rustling (brighter & fuller during daytime breeze, softer hushed at night)
+    const dayAmount = Math.max(0, 1 - nightFactor);
+    this.currentForestLevel = (0.008 + dayAmount * 0.014 + windNorm * 0.011) * (1 - rainBlend * 0.45);
+
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    if (sfxScale > 0.005) {
+      this.ensureNatureLoops();
+    }
+
+    const now = this.ctx.currentTime;
+    if (this.waterfallGain && this.waterfallLowFilter && this.waterfallSprayFilter) {
+      this.waterfallGain.gain.setTargetAtTime(this.currentWaterfallLevel * sfxScale, now, 0.1);
+      // Closer to waterfall = brighter crisp mist & deeper rumble; farther = muffled low rush
+      this.waterfallLowFilter.frequency.setTargetAtTime(340 + proximity * 320, now, 0.16);
+      this.waterfallSprayFilter.frequency.setTargetAtTime(1450 + proximity * 1150, now, 0.16);
+    }
+
+    if (this.windGain && this.windFilter) {
+      this.windGain.gain.setTargetAtTime(this.currentWindLevel * sfxScale, now, 0.25);
+      const windFreq = 250 + windNorm * 310 + Math.sin(elapsed * 0.48) * 95;
+      this.windFilter.frequency.setTargetAtTime(Math.max(180, windFreq), now, 0.25);
+    }
+
+    if (this.forestGain && this.forestFilter) {
+      this.forestGain.gain.setTargetAtTime(this.currentForestLevel * sfxScale, now, 0.3);
+      const forestFreq = 1950 + dayAmount * 750 + Math.sin(elapsed * 0.72) * 260;
+      this.forestFilter.frequency.setTargetAtTime(forestFreq, now, 0.3);
+    }
+
+    if (sfxScale <= 0.01) return;
+
+    // 4. Time-of-day procedural forest wildlife voices (suppressed in heavy storm)
+    if (rainBlend < 0.65) {
+      if (nightFactor > 0.52) {
+        // Nighttime forest: gentle rhythmic cricket chorus + occasional distant owl
+        this.forestCricketTimer -= dt;
+        if (this.forestCricketTimer <= 0) {
+          this.forestCricketTimer = 2.3 + Math.random() * 2.9;
+          this.playNightCricket(nightFactor);
+        }
+        this.forestOwlTimer -= dt;
+        if (this.forestOwlTimer <= 0) {
+          this.forestOwlTimer = 11.0 + Math.random() * 10.5;
+          this.playNightOwl(nightFactor);
+        }
+      } else {
+        // Daytime / Dawn / Dusk forest: soft distant woodland songbird / wood-dove calls
+        this.forestDayBirdTimer -= dt;
+        if (this.forestDayBirdTimer <= 0) {
+          this.forestDayBirdTimer = 5.5 + Math.random() * 5.8;
+          if (Math.random() < 0.65) {
+            this.playBirdChirp(0.55 + dayAmount * 0.3);
+          } else {
+            this.playForestDove(0.45 + dayAmount * 0.35);
+          }
+        }
+      }
+    }
+  }
+
+  private playForestDove(scale = 0.7): void {
+    if (this.muted || !this.ctx || this.ctx.state !== 'running') return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const vol = Math.min(0.045, 0.03 * this.masterVolume * this.sfxVolume * scale);
+    const notes = [
+      { delay: 0, dur: 0.22, f0: 540, f1: 495 },
+      { delay: 0.28, dur: 0.34, f0: 455, f1: 425 },
+    ];
+    for (const n of notes) {
+      const t = now + n.delay;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(n.f0, t);
+      osc.frequency.exponentialRampToValueAtTime(n.f1, t + n.dur);
+      g.gain.setValueAtTime(0.0005, t);
+      g.gain.linearRampToValueAtTime(vol, t + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + n.dur + 0.03);
+      osc.connect(g);
+      g.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + n.dur + 0.04);
+    }
+  }
+
+  private playNightCricket(nightFactor: number): void {
+    if (this.muted || !this.ctx || this.ctx.state !== 'running') return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const vol = Math.min(0.028, 0.018 * nightFactor * this.masterVolume * this.sfxVolume);
+    const baseFreq = 4150 + Math.random() * 550;
+    const pulses = 3 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < pulses; i++) {
+      const t = now + i * 0.058;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(baseFreq, t);
+      osc.frequency.linearRampToValueAtTime(baseFreq + 90, t + 0.032);
+      g.gain.setValueAtTime(0.0003, t);
+      g.gain.linearRampToValueAtTime(vol, t + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0003, t + 0.044);
+      osc.connect(g);
+      g.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.048);
+    }
+  }
+
+  private playNightOwl(nightFactor: number): void {
+    if (this.muted || !this.ctx || this.ctx.state !== 'running') return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const vol = Math.min(0.04, 0.028 * nightFactor * this.masterVolume * this.sfxVolume);
+    const hoots = [
+      { delay: 0, dur: 0.24, f0: 410, f1: 375 },
+      { delay: 0.34, dur: 0.42, f0: 365, f1: 318 },
+    ];
+    for (const h of hoots) {
+      const t = now + h.delay;
+      const osc = ctx.createOscillator();
+      const lp = ctx.createBiquadFilter();
+      const g = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(h.f0, t);
+      osc.frequency.exponentialRampToValueAtTime(h.f1, t + h.dur);
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(750, t);
+      g.gain.setValueAtTime(0.0005, t);
+      g.gain.linearRampToValueAtTime(vol, t + 0.055);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + h.dur + 0.05);
+      osc.connect(lp);
+      lp.connect(g);
+      g.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + h.dur + 0.06);
+    }
+  }
+
+  public playEatFood(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const volScale = this.masterVolume * this.sfxVolume;
+
+    // Two crisp crunch bites
+    if (this.noiseBuffer) {
+      for (let i = 0; i < 2; i++) {
+        const t = now + i * 0.11;
+        const src = ctx.createBufferSource();
+        src.buffer = this.noiseBuffer;
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(1650 + i * 320, t);
+        bp.Q.setValueAtTime(1.8, t);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.001, t);
+        g.gain.linearRampToValueAtTime(0.11 * volScale, t + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.075);
+        src.connect(bp);
+        bp.connect(g);
+        g.connect(ctx.destination);
+        src.start(t, Math.random() * 0.5, 0.09);
+      }
+    }
+
+    // Warm nourishing chime
+    const notes = [523.25, 659.25, 783.99];
+    notes.forEach((f, idx) => {
+      const t = now + 0.18 + idx * 0.055;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f, t);
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.065 * volScale, t + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      osc.connect(g);
+      g.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.26);
+    });
   }
 
   public playThunder(): void {
@@ -1081,6 +1482,65 @@ export class SoundEngine {
     });
   }
 
+  /**
+   * Soft procedural daytime songbird / flock chirps (2-3 melodic high-register trills).
+   * Only plays when AudioContext is already running so it stays unobtrusive.
+   */
+  public playBirdChirp(volumeScale = 1): void {
+    if (this.muted || !this.ctx || this.ctx.state !== 'running') return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const vol = Math.max(0.008, Math.min(0.065, 0.042 * this.masterVolume * this.sfxVolume * volumeScale));
+
+    // Pick one of 3 natural melodic bird call contours
+    const pattern = Math.floor(Math.random() * 3);
+    const baseFreq = 2550 + Math.random() * 950;
+    const notes =
+      pattern === 0
+        ? [
+            { delay: 0, dur: 0.085, f0: baseFreq, f1: baseFreq * 1.38, f2: baseFreq * 1.12 },
+            { delay: 0.115, dur: 0.11, f0: baseFreq * 1.15, f1: baseFreq * 1.52, f2: baseFreq * 1.24 },
+          ]
+        : pattern === 1
+          ? [
+              { delay: 0, dur: 0.065, f0: baseFreq * 1.22, f1: baseFreq * 0.94, f2: baseFreq * 1.18 },
+              { delay: 0.085, dur: 0.07, f0: baseFreq * 1.3, f1: baseFreq * 1.02, f2: baseFreq * 1.28 },
+              { delay: 0.18, dur: 0.125, f0: baseFreq * 1.1, f1: baseFreq * 1.55, f2: baseFreq * 1.32 },
+            ]
+          : [
+              { delay: 0, dur: 0.13, f0: baseFreq * 0.92, f1: baseFreq * 1.35, f2: baseFreq * 0.98 },
+              { delay: 0.22, dur: 0.09, f0: baseFreq * 1.18, f1: baseFreq * 1.46, f2: baseFreq * 1.26 },
+            ];
+
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const t = now + n.delay;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const filter = ctx.createBiquadFilter();
+
+      osc.type = i % 2 === 0 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(n.f0, t);
+      osc.frequency.exponentialRampToValueAtTime(n.f1, t + n.dur * 0.55);
+      osc.frequency.exponentialRampToValueAtTime(n.f2, t + n.dur);
+
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(n.f1, t);
+      filter.Q.setValueAtTime(2.2, t);
+
+      gain.gain.setValueAtTime(0.0005, t);
+      gain.gain.linearRampToValueAtTime(vol, t + 0.014);
+      gain.gain.exponentialRampToValueAtTime(0.0005, t + n.dur + 0.02);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(t);
+      osc.stop(t + n.dur + 0.03);
+    }
+  }
+
   public dispose(): void {
     if (this.bgmSchedulerId !== null) {
       clearInterval(this.bgmSchedulerId);
@@ -1102,6 +1562,18 @@ export class SoundEngine {
       }
       this.rainSource = null;
     }
+    for (const src of [this.waterfallSource, this.windSource, this.forestSource]) {
+      if (src) {
+        try {
+          src.stop();
+        } catch {
+          // ignore
+        }
+      }
+    }
+    this.waterfallSource = null;
+    this.windSource = null;
+    this.forestSource = null;
     if (this.ctx) {
       this.ctx.close().catch(() => {});
       this.ctx = null;

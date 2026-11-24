@@ -5,14 +5,22 @@ import {
   ARMORS_CATALOG,
   ArmorSpec,
   BossHudSnapshot,
+  CameraPerspectiveMode,
+  DAILY_QUESTS_CATALOG,
+  DailyQuestId,
+  DailyQuestsHudState,
   DEFAULT_HOTBAR_SLOTS,
   ELEMENT_META,
   EmoteId,
   EMOTES_CATALOG,
   FloatingFeedback,
+  FOOD_CATALOG,
+  FoodId,
+  GameMode,
   GamePhase,
   getClassSkillsCatalog,
   getClassSpec,
+  getCreativeDefaultHotbarForClass,
   getDefaultHotbarForClass,
   getProficiencyRankTitle,
   getRegionInfoAt,
@@ -31,6 +39,8 @@ import {
   HudSnapshot,
   InteractableHint,
   Inventory,
+  MATERIAL_ITEMS_CATALOG,
+  MaterialItemId,
   MinimapEntity,
   MonsterSpecies,
   NearbyMonsterOverlay,
@@ -43,6 +53,9 @@ import {
   QuestId,
   QuestSnapshot,
   SaveMetaSummary,
+  SharedSpawnedMonsterPayload,
+  SPAWN_EGGS_CATALOG,
+  SpawnEggId,
   SpiritRank,
   TimePreset,
   TRIAL_TOWER_FLOORS,
@@ -54,6 +67,7 @@ import {
   WeaponSpec,
   WeatherKind,
   WORLD_TIERS,
+  WorldRecord,
   getHousingPieceCost,
   getHousingPieceMaxDurability,
   getHousingRepairCost,
@@ -94,13 +108,20 @@ import {
 } from './housing';
 import {
   clearSavedGame,
+  createEmptyDailyQuestState,
+  DailyQuestSaveState,
   formatSavedTime,
   GameSaveData,
   getSaveSummary,
+  getTodayDateKey,
   isValidSaveData,
   isValidSavedTile,
+  loadDailyQuestState,
   loadGameFromStorage,
+  loadWorldData,
+  saveDailyQuestState,
   saveGameToStorage,
+  saveWorldData,
   VALID_HOUSING_COLORS,
 } from './saveSystem';
 import {
@@ -112,10 +133,12 @@ import {
   createOtherPlayerHouse,
   createParticlePool,
   createRuinsLandmark,
+  createScenicWaterfallLandmark,
   createTrialDungeonArena,
   createTrialTowerLandmark,
   OtherPlayerPlot,
   ParticlePool,
+  ScenicWaterfallRig,
   StaticCollider,
   TRIAL_DUNGEON_RADIUS,
   TRIAL_DUNGEON_X,
@@ -131,15 +154,32 @@ import {
   MultiplayerClient,
   MultiplayerTransport,
   RemotePlayerPayload,
+  RoomDailyQuestPayload,
   SharedHousingPayload,
   SharedPlotPayload,
 } from './multiplayer';
+import { GameSettings, getDefaultSettings } from './userConfig';
 
 // Pre-allocated module-scope scratch objects (zero GC in render loop)
 const _moveDir = new THREE.Vector3();
 const _camForward = new THREE.Vector3();
 const _camRight = new THREE.Vector3();
 const _camDesired = new THREE.Vector3();
+const _waterSunDir = new THREE.Vector3();
+const _waterSunColor = new THREE.Color();
+const _waterSkyHorizon = new THREE.Color();
+const _waterSkyZenith = new THREE.Color();
+const _waterFogColor = new THREE.Color();
+const _waterEnvPayload = {
+  elapsed: 0,
+  sunDir: _waterSunDir,
+  sunColor: _waterSunColor,
+  skyHorizon: _waterSkyHorizon,
+  skyZenith: _waterSkyZenith,
+  fogColor: _waterFogColor,
+  fogDensity: 0.0024,
+  nightFactor: 0,
+};
 const _camLookAt = new THREE.Vector3();
 const _projVec = new THREE.Vector3();
 const _rayMouse = new THREE.Vector2();
@@ -259,6 +299,13 @@ export class GameEngine {
   private swimSplashTimer = 0;
   private breathDamageTimer = 0;
 
+  // World & Mode State (Survival vs Creative + Multi-World Registry)
+  private gameMode: GameMode = 'survival';
+  private currentWorldId: string | null = null;
+  private currentWorldName = '아키포우 월드';
+  private worldIsMultiplayer = false;
+  private worldRoomCode = 'main';
+
   // Real-Time Multiplayer State (Unified Shared Server: WebSocket + HTTP fallback)
   private mpClient: MultiplayerClient | null = null;
   private mpConnected = false;
@@ -333,7 +380,21 @@ export class GameEngine {
     fang: 0,
     essence: 0,
     potion: 1,
+    apple: 2,
+    berry: 2,
+    mushroom: 0,
+    honey: 0,
+    coconut: 0,
+    cactus_fruit: 0,
+    carrot: 0,
+    meat: 0,
   };
+  private hunger = 100;
+  private maxHunger = 100;
+  private selectedFood: FoodId = 'apple';
+  private starvationTickTimer = 0;
+  private cameraMode: CameraPerspectiveMode = 'third_back';
+  private isFullscreen = false;
   private upgrades: PlayerUpgrades = { toolLevel: 1, bootsLevel: 1, armorLevel: 1 };
   private ownedWeapons: WeaponId[] = ['crystal_sword'];
   private equippedWeapon: WeaponId = 'crystal_sword';
@@ -357,6 +418,11 @@ export class GameEngine {
   private observedNightWildlife = false;
   private claimedQuests = new Set<QuestId>();
   private notifiedQuests = new Set<QuestId>();
+  private dailyQuestState: DailyQuestSaveState = loadDailyQuestState();
+  private roomDailyProgress: Partial<Record<DailyQuestId, number>> = {};
+  private roomDailyContributors: Partial<Record<DailyQuestId, string>> = {};
+  private notifiedDailyQuests = new Set<DailyQuestId>();
+  private mpRoomGameMode: GameMode = 'survival';
 
   // Warrior Skill Mastery & 4-Branch Proficiency System
   private skillMasteryPoints = 1;
@@ -429,6 +495,19 @@ export class GameEngine {
   private cameraDist = 7.6;
   private targetCameraDist = 7.6;
   private titleOrbitAngle = 0.45;
+  private titleCameraMode: 'scenic' | 'character' = 'scenic';
+  private waterfallRig: ScenicWaterfallRig | null = null;
+  private meadowGrassMesh: THREE.InstancedMesh | null = null;
+  private meadowGrassMaxCount = 1200;
+
+  // Optimization & Settings state
+  private settings: GameSettings = getDefaultSettings();
+  private cullDistance = 125;
+  private frameCounter = 0;
+  private fpsAccumTime = 0;
+  private fpsAccumFrames = 0;
+  private currentFps = 60;
+  private lastRenderTimeMs = 0;
 
   // Input state (Keyboard + Mouse + Multi-Touch Mobile Joystick/Camera/Pinch)
   private heldKeys = new Set<string>();
@@ -628,6 +707,11 @@ export class GameEngine {
     this.scene.add(trialTower.landmark.group);
     this.staticColliders.push(...trialTower.colliders);
 
+    // Scenic Waterfall Cliff & Plunge Pool Vista (featured on rotating Title screen & open world)
+    this.waterfallRig = createScenicWaterfallLandmark();
+    this.scene.add(this.waterfallRig.group);
+    this.staticColliders.push(...this.waterfallRig.colliders);
+
     this.catRig = createCatWarrior(this.textures);
     this.playerY = getTerrainHeight(this.playerX, this.playerZ);
     this.catRig.root.position.set(this.playerX, this.playerY, this.playerZ);
@@ -639,6 +723,7 @@ export class GameEngine {
     this.particles = createParticlePool(180);
     this.scene.add(this.particles.group);
 
+    this.applySettings(this.settings);
     this.initMultiplayer();
     this.emitHudSnapshot();
 
@@ -660,7 +745,10 @@ export class GameEngine {
     if (this.worldDeferredBooted) return;
     this.worldDeferredBooted = true;
 
-    const grass = this.assets.createMeadowGrassInstanced(1200, 210);
+    const grass = this.assets.createMeadowGrassInstanced(this.meadowGrassMaxCount, 210);
+    this.meadowGrassMesh = grass;
+    grass.count = Math.floor(this.meadowGrassMaxCount * this.settings.grassDensity);
+    grass.visible = grass.count > 0;
     this.scene.add(grass);
 
     const neighbor1 = createOtherPlayerHouse(
@@ -885,6 +973,51 @@ export class GameEngine {
       spawnBatch(10, 18, 82, (id, x, z, s) => this.assets.createTreeNode(id, 'oak_tree', x, z, 1, s), EAST_WATER);
       spawnBatch(10, 18, 82, (id, x, z, s) => this.assets.createRockNode(id, 'granite_rock', x, z, 1, s), SOUTH_FIRE);
 
+      // Curated starter Food Nodes right around the village, waterfall path & meadow borders (7 distinct world foods!)
+      const starterFoods: Array<{
+        kind:
+          | 'apple_tree'
+          | 'berry_bush'
+          | 'mushroom_patch'
+          | 'wild_beehive'
+          | 'coconut_palm'
+          | 'cactus_pear'
+          | 'carrot_patch';
+        x: number;
+        z: number;
+        s: number;
+      }> = [
+        { kind: 'apple_tree', x: 11.2, z: 6.4, s: 1.02 },
+        { kind: 'apple_tree', x: -11.5, z: 7.2, s: 0.96 },
+        { kind: 'berry_bush', x: 5.8, z: 10.6, s: 1.05 },
+        { kind: 'berry_bush', x: -5.4, z: 11.2, s: 0.98 },
+        { kind: 'carrot_patch', x: -10.8, z: -2.2, s: 1.05 },
+        { kind: 'carrot_patch', x: 12.6, z: -2.6, s: 1.0 },
+        { kind: 'mushroom_patch', x: 19.5, z: 14.2, s: 1.05 },
+        { kind: 'mushroom_patch', x: -16.2, z: -11.4, s: 1.0 },
+        { kind: 'wild_beehive', x: -15.4, z: 13.8, s: 1.0 },
+        { kind: 'wild_beehive', x: 17.8, z: -12.2, s: 1.0 },
+        { kind: 'coconut_palm', x: 26.5, z: 2.8, s: 1.02 },
+        { kind: 'coconut_palm', x: 38.4, z: -8.6, s: 1.08 },
+        { kind: 'cactus_pear', x: -12.5, z: -28.0, s: 1.04 },
+        { kind: 'cactus_pear', x: 11.8, z: -31.5, s: 1.0 },
+      ];
+      for (const sf of starterFoods) {
+        const id = `food_${this.nodeCounter++}`;
+        const node = this.assets.createFoodNode(id, sf.kind, sf.x, sf.z, 1, sf.s);
+        this.resources.push(node);
+        this.scene.add(node.group);
+      }
+
+      // Biome-distributed wild food batches across Tier 1
+      spawnBatch(7, 16, 78, (id, x, z, s) => this.assets.createFoodNode(id, 'apple_tree', x, z, 1, s), WEST_WIND);
+      spawnBatch(8, 16, 78, (id, x, z, s) => this.assets.createFoodNode(id, 'berry_bush', x, z, 1, s));
+      spawnBatch(6, 20, 82, (id, x, z, s) => this.assets.createFoodNode(id, 'mushroom_patch', x, z, 1, s), WEST_WIND);
+      spawnBatch(5, 22, 80, (id, x, z, s) => this.assets.createFoodNode(id, 'wild_beehive', x, z, 1, s), WEST_WIND);
+      spawnBatch(7, 24, 82, (id, x, z, s) => this.assets.createFoodNode(id, 'coconut_palm', x, z, 1, s), EAST_WATER);
+      spawnBatch(7, 24, 84, (id, x, z, s) => this.assets.createFoodNode(id, 'cactus_pear', x, z, 1, s), NORTH_EARTH);
+      spawnBatch(6, 18, 76, (id, x, z, s) => this.assets.createFoodNode(id, 'carrot_patch', x, z, 1, s), SOUTH_FIRE);
+
       // Cute 최하급 아기 정령 (Baby Elemental Spirits) right near each cardinal meadow border!
       const starterSpirits: Array<{
         species: 'water_spirit' | 'wind_spirit' | 'fire_spirit' | 'earth_spirit';
@@ -964,6 +1097,12 @@ export class GameEngine {
       spawnBatch(14, minR, maxR, (id, x, z, s) => this.assets.createTreeNode(id, treeKind, x, z, tier, s));
       spawnBatch(10, minR, maxR, (id, x, z, s) => this.assets.createRockNode(id, 'iron_vein', x, z, tier, s));
       spawnBatch(8 + Math.min(8, tier), minR, maxR, (id, x, z, s) => this.assets.createRockNode(id, 'crystal_cluster', x, z, tier, s));
+      // Biome food spawns in expanded rings
+      spawnBatch(4, minR, maxR, (id, x, z, s) => this.assets.createFoodNode(id, 'apple_tree', x, z, tier, s), WEST_WIND);
+      spawnBatch(4, minR, maxR, (id, x, z, s) => this.assets.createFoodNode(id, 'berry_bush', x, z, tier, s));
+      spawnBatch(4, minR, maxR, (id, x, z, s) => this.assets.createFoodNode(id, 'coconut_palm', x, z, tier, s), EAST_WATER);
+      spawnBatch(4, minR, maxR, (id, x, z, s) => this.assets.createFoodNode(id, 'cactus_pear', x, z, tier, s), NORTH_EARTH);
+      spawnBatch(3, minR, maxR, (id, x, z, s) => this.assets.createFoodNode(id, 'mushroom_patch', x, z, tier, s), SOUTH_FIRE);
 
       if (spiritRank === 'king') {
         // Tier 10 Summit: Summon the 4 Supreme Elemental Spirit Kings in E/W/S/N outer sanctuaries!
@@ -1053,6 +1192,216 @@ export class GameEngine {
     this.emitHudSnapshot();
   }
 
+  public startWorld(world: WorldRecord, customName?: string): void {
+    this.ensureWorldBooted();
+    this.sound.unlock();
+    this.sound.startBgm();
+
+    this.currentWorldId = world.id;
+    this.currentWorldName = world.name;
+    this.gameMode = world.gameMode;
+    this.worldIsMultiplayer = world.isMultiplayer;
+    this.worldRoomCode = world.roomCode || 'main';
+
+    const existingSave = loadWorldData(world.id);
+    if (existingSave) {
+      this.applySaveData({
+        ...existingSave,
+        worldId: world.id,
+        worldName: world.name,
+        gameMode: world.gameMode,
+        isMultiplayer: world.isMultiplayer,
+        roomCode: world.roomCode,
+      });
+    } else {
+      this.resetWorldStateInPlace(world.playerClass, world.gameMode);
+    }
+
+    if (this.gameMode === 'creative') {
+      this.applyCreativeUnlocks();
+    }
+
+    const cls = getClassSpec(this.playerClass);
+    if (customName && customName.trim().length > 0) {
+      this.setMultiplayerName(customName.trim());
+    } else if (!this.mpPlayerName) {
+      this.setMultiplayerName(cls.defaultNickname);
+    }
+
+    // Apply Multiplayer Room if enabled for this world
+    if (world.isMultiplayer && world.roomCode && !this.isOffline) {
+      this.joinMultiplayerRoom(world.roomCode, world.gameMode);
+    } else if (!world.isMultiplayer) {
+      this.mpClient?.dispose();
+      this.mpClient = null;
+      this.mpConnected = false;
+      this.mpTransport = 'offline';
+      this.mpRoomGameMode = world.gameMode;
+      this.roomDailyProgress = {};
+      this.roomDailyContributors = {};
+      for (const id of Array.from(this.remotePlayers.keys())) {
+        this.removeRemotePlayer(id);
+      }
+    }
+
+    this.phase = 'playing';
+    this.saveGame(true);
+
+    if (this.gameMode === 'creative') {
+      this.showBanner(
+        `[크리에이티브 · ${world.name}] 무적·무한 달리기·배고픔·체력 활성 · 가방(I)에서 모든 아이템과 몹 생성알을 하단 9칸 바에 배치하세요!`,
+      );
+    } else {
+      this.showBanner(
+        `[서바이벌 · ${world.name}] ${cls.name}(으)로 모험을 시작합니다!${world.isMultiplayer && world.roomCode ? ` · 멀티 코드: ${world.roomCode}` : ''}`,
+      );
+    }
+    this.emitHudSnapshot();
+  }
+
+  private applyCreativeUnlocks(): void {
+    this.ownedWeapons = WEAPONS_CATALOG.map((w) => w.id);
+    this.ownedArmors = ARMORS_CATALOG.map((a) => a.id);
+    this.inventory = {
+      wood: Math.max(this.inventory.wood, 999),
+      stone: Math.max(this.inventory.stone, 999),
+      iron: Math.max(this.inventory.iron, 999),
+      crystal: Math.max(this.inventory.crystal, 999),
+      leather: Math.max(this.inventory.leather, 999),
+      fang: Math.max(this.inventory.fang, 999),
+      essence: Math.max(this.inventory.essence, 999),
+      potion: Math.max(this.inventory.potion, 99),
+      apple: Math.max(this.inventory.apple, 99),
+      berry: Math.max(this.inventory.berry, 99),
+      mushroom: Math.max(this.inventory.mushroom, 99),
+      honey: Math.max(this.inventory.honey, 99),
+      coconut: Math.max(this.inventory.coconut, 99),
+      cactus_fruit: Math.max(this.inventory.cactus_fruit, 99),
+      carrot: Math.max(this.inventory.carrot, 99),
+      meat: Math.max(this.inventory.meat, 99),
+    };
+    const creativeDefaults = getCreativeDefaultHotbarForClass(this.playerClass);
+    if (this.hotbarSlots.length < 9) {
+      const padded = [...this.hotbarSlots];
+      for (const item of creativeDefaults) {
+        if (padded.length >= 9) break;
+        if (!padded.includes(item)) padded.push(item);
+      }
+      while (padded.length < 9) padded.push('egg:forest_slime');
+      this.hotbarSlots = padded.slice(0, 9);
+    }
+    this.hp = this.maxHp;
+    this.stamina = this.maxStamina;
+    this.hunger = this.maxHunger;
+    this.breath = this.maxBreath;
+  }
+
+  private resetWorldStateInPlace(classId: PlayerClassId, mode: GameMode): void {
+    this.exitHousingMode();
+    for (const h of this.placedHouses) this.scene.remove(h.group);
+    this.placedHouses = [];
+    for (const p of this.claimedPlots) this.scene.remove(p.group);
+    this.claimedPlots = [];
+    this.suppressedResourceIds.clear();
+    for (const l of this.lanterns) this.scene.remove(l.group);
+    this.lanterns = [];
+    for (const r of this.resources) this.scene.remove(r.group);
+    this.resources = [];
+    for (const m of this.monsters) this.scene.remove(m.group);
+    this.monsters = [];
+
+    this.worldTier = 1;
+    this.frontierRingRadius = WORLD_TIERS[0].radius;
+    this.targetFrontierRadius = WORLD_TIERS[0].radius;
+    this.frontierRingMesh.scale.setScalar(this.frontierRingRadius);
+    const monolith = this.landmarks.find((l) => l.kind === 'frontier_stone');
+    if (monolith) {
+      const my = getTerrainHeight(0, -31.5);
+      monolith.x = 0;
+      monolith.y = my;
+      monolith.z = -31.5;
+      monolith.group.position.set(0, my, -31.5);
+    }
+
+    const cls = getClassSpec(classId);
+    this.playerClass = cls.id;
+    this.gameMode = mode;
+    this.inventory = {
+      wood: 3,
+      stone: 2,
+      iron: 0,
+      crystal: 0,
+      leather: 0,
+      fang: 0,
+      essence: 0,
+      potion: 1,
+      apple: 2,
+      berry: 2,
+      mushroom: 0,
+      honey: 0,
+      coconut: 0,
+      cactus_fruit: 0,
+      carrot: 0,
+      meat: 0,
+    };
+    this.hunger = this.maxHunger;
+    this.selectedFood = 'apple';
+    this.starvationTickTimer = 0;
+    this.upgrades = { toolLevel: 1, bootsLevel: 1, armorLevel: 1 };
+    this.ownedWeapons = [cls.starterWeapon];
+    this.equippedWeapon = cls.starterWeapon;
+    this.ownedArmors = [cls.starterArmor];
+    this.equippedArmor = cls.starterArmor;
+    this.hotbarSlots =
+      mode === 'creative' ? getCreativeDefaultHotbarForClass(cls.id) : getDefaultHotbarForClass(cls.id);
+    this.catRig.setClass(cls.id);
+    this.catRig.setEquippedWeapon(this.equippedWeapon);
+    this.catRig.setEquippedArmor(this.equippedArmor);
+
+    this.level = 1;
+    this.exp = 0;
+    this.nextExp = 40;
+    this.harvestedTotal = 0;
+    this.plantedSaplings = 0;
+    this.woodGathered = 0;
+    this.stoneGathered = 0;
+    this.ironGathered = 0;
+    this.leatherGathered = 0;
+    this.monstersDefeated = 0;
+    this.bossesDefeated = 0;
+    this.observedNightWildlife = false;
+    this.skillMasteryPoints = 1;
+    this.skillRanks = { whirlwind: 1, vanguard_dash: 1, earthbreaker: 1, warcry: 1 };
+    this.skillCooldowns = { whirlwind: 0, vanguard_dash: 0, earthbreaker: 0, warcry: 0 };
+    this.activeSkillAnim = null;
+    this.skillAnimTimer = 0;
+    this.warcryBuffRemaining = 0;
+    this.proficiencies = {
+      combat: { level: 1, exp: 0, nextExp: 60 },
+      logging: { level: 1, exp: 0, nextExp: 60 },
+      mining: { level: 1, exp: 0, nextExp: 60 },
+      craft: { level: 1, exp: 0, nextExp: 60 },
+    };
+    this.recalcPlayerStats(true);
+    this.claimedQuests.clear();
+    this.notifiedQuests.clear();
+
+    this.playerX = 0;
+    this.playerZ = 6.2;
+    this.playerY = getTerrainHeight(0, 6.2);
+    this.playerYaw = Math.PI;
+    this.velX = 0;
+    this.velY = 0;
+    this.velZ = 0;
+    this.catRig.root.position.set(this.playerX, this.playerY, this.playerZ);
+    this.catRig.root.rotation.y = this.playerYaw;
+
+    this.spawnTierResources(1);
+    if (mode === 'creative') {
+      this.applyCreativeUnlocks();
+    }
+  }
+
   public startGame(loadExistingSave = false, selectedClass?: PlayerClassId, customName?: string): void {
     this.sound.unlock();
     this.sound.startBgm();
@@ -1064,6 +1413,7 @@ export class GameEngine {
     } else {
       const cls = getClassSpec(selectedClass || this.playerClass);
       this.playerClass = cls.id;
+      this.gameMode = 'survival';
       this.ownedWeapons = [cls.starterWeapon];
       this.equippedWeapon = cls.starterWeapon;
       this.ownedArmors = [cls.starterArmor];
@@ -1090,6 +1440,29 @@ export class GameEngine {
       this.heldKeys.clear();
     }
     this.sound.updateBgm(this.environment ? this.environment.nightFactor : 0, phase === 'playing');
+    this.emitHudSnapshot();
+  }
+
+  /**
+   * Saves progress cleanly and returns to the scenic Main Menu title screen.
+   */
+  public returnToTitle(): void {
+    if (this.phase === 'playing' || this.phase === 'paused') {
+      this.saveGame(true);
+    }
+    if (this.housingMode !== 'off') {
+      this.exitHousingMode();
+    }
+    if (this.trialTowerActiveFloor !== null) {
+      this.exitTrialTower(true);
+    }
+    this.heldKeys.clear();
+    this.mobileMoveX = 0;
+    this.mobileMoveZ = 0;
+    this.mobileSprint = false;
+    this.phase = 'title';
+    this.titleCameraMode = 'scenic';
+    this.sound.updateBgm(this.environment ? this.environment.nightFactor : 0, false);
     this.emitHudSnapshot();
   }
 
@@ -1257,6 +1630,164 @@ export class GameEngine {
         this.showBanner(`퀘스트 달성! [${q.title}] — 우측 퀘스트 일지에서 보상을 수령하세요`);
       }
     }
+
+    const daily = this.buildDailyQuestsSnapshot();
+    for (const dq of daily.quests) {
+      if (dq.completed && !dq.claimed && !this.notifiedDailyQuests.has(dq.id)) {
+        this.notifiedDailyQuests.add(dq.id);
+        this.sound.playQuestComplete();
+        this.showBanner(`일일 퀘스트 달성! [${dq.title}] — 우측 퀘스트 일지(J)에서 보상을 받으세요`);
+      }
+    }
+  }
+
+  private ensureDailyQuestDate(): void {
+    const today = getTodayDateKey();
+    if (this.dailyQuestState.dateKey !== today) {
+      this.dailyQuestState = createEmptyDailyQuestState(today);
+      this.notifiedDailyQuests.clear();
+      this.roomDailyProgress = {};
+      this.roomDailyContributors = {};
+      saveDailyQuestState(this.dailyQuestState);
+    }
+  }
+
+  private recordDailyProgress(id: DailyQuestId, delta = 1): void {
+    if (delta <= 0) return;
+    this.ensureDailyQuestDate();
+    const spec = DAILY_QUESTS_CATALOG.find((q) => q.id === id);
+    if (!spec) return;
+    const prev = this.dailyQuestState.progress[id] ?? 0;
+    const next = Math.min(spec.target * 2, prev + delta);
+    this.dailyQuestState.progress[id] = next;
+    saveDailyQuestState(this.dailyQuestState);
+
+    if (this.mpClient && this.mpConnected) {
+      this.mpClient.sendDailyProgress(id, delta);
+    }
+  }
+
+  private applyRemoteDailyState(daily: RoomDailyQuestPayload): void {
+    this.ensureDailyQuestDate();
+    if (!daily || daily.dateKey !== this.dailyQuestState.dateKey) return;
+    const nextProgress: Partial<Record<DailyQuestId, number>> = {};
+    for (const spec of DAILY_QUESTS_CATALOG) {
+      const rv = Number(daily.progress?.[spec.id] ?? 0);
+      if (Number.isFinite(rv) && rv > 0) {
+        nextProgress[spec.id] = rv;
+      }
+    }
+    this.roomDailyProgress = nextProgress;
+    this.roomDailyContributors = { ...(daily.contributors || {}) };
+  }
+
+  private buildDailyQuestsSnapshot(): DailyQuestsHudState {
+    this.ensureDailyQuestDate();
+    const coopSynced = Boolean(this.mpConnected);
+    const quests = DAILY_QUESTS_CATALOG.map((spec) => {
+      const localVal = this.dailyQuestState.progress[spec.id] ?? 0;
+      const roomVal = coopSynced ? (this.roomDailyProgress[spec.id] ?? 0) : 0;
+      const current = Math.min(spec.target, Math.max(localVal, roomVal));
+      const claimed = this.dailyQuestState.claimed.includes(spec.id);
+      return {
+        id: spec.id,
+        title: spec.title,
+        description: spec.description,
+        current,
+        target: spec.target,
+        completed: current >= spec.target,
+        claimed,
+        rewardText: spec.rewardText,
+        lastContributor: coopSynced ? this.roomDailyContributors[spec.id] : undefined,
+      };
+    });
+    const completedCount = quests.filter((q) => q.completed || q.claimed).length;
+    return {
+      dateKey: this.dailyQuestState.dateKey,
+      quests,
+      coopSynced,
+      completedCount,
+      totalCount: quests.length,
+      allClearClaimed: this.dailyQuestState.allClearClaimed,
+    };
+  }
+
+  public claimDailyQuestReward(id: DailyQuestId): boolean {
+    this.ensureDailyQuestDate();
+    if (this.dailyQuestState.claimed.includes(id)) return false;
+    const snap = this.buildDailyQuestsSnapshot();
+    const q = snap.quests.find((item) => item.id === id);
+    const spec = DAILY_QUESTS_CATALOG.find((item) => item.id === id);
+    if (!q || !spec || !q.completed) return false;
+
+    this.sound.unlock();
+    this.dailyQuestState.claimed.push(id);
+    saveDailyQuestState(this.dailyQuestState);
+
+    for (const [key, amount] of Object.entries(spec.invReward) as Array<[keyof Inventory, number]>) {
+      if (amount && amount > 0) {
+        this.inventory[key] = (this.inventory[key] ?? 0) + amount;
+      }
+    }
+    if (spec.masteryPoints && spec.masteryPoints > 0) {
+      this.skillMasteryPoints += spec.masteryPoints;
+    }
+
+    this.gainExp(spec.expReward);
+    this.sound.playQuestComplete();
+    this.particles.spawnBurst(this.playerX, this.playerY + 1.4, this.playerZ, 0x38bdf8, 22, 4.8);
+    this.particles.spawnRing(this.playerX, this.playerY, this.playerZ, 0xfde047, 3.0);
+    this.spawnFeedback(
+      `일일 퀘스트 완료! (${spec.rewardText})`,
+      '#62e5ff',
+      this.playerX,
+      this.playerY + 2.35,
+      this.playerZ,
+    );
+    this.showBanner(`일일 퀘스트 보상 수령: [${spec.title}] (${spec.rewardText})`);
+
+    if (this.mpClient && this.mpConnected) {
+      this.mpClient.sendPlayerEvent('daily_complete', spec.title);
+    }
+
+    this.saveGame(true);
+    this.emitHudSnapshot();
+    return true;
+  }
+
+  public claimDailyAllClearBonus(): boolean {
+    this.ensureDailyQuestDate();
+    if (this.dailyQuestState.allClearClaimed) return false;
+    const snap = this.buildDailyQuestsSnapshot();
+    if (snap.completedCount < snap.totalCount) return false;
+
+    this.sound.unlock();
+    this.dailyQuestState.allClearClaimed = true;
+    saveDailyQuestState(this.dailyQuestState);
+
+    this.inventory.crystal += 5;
+    this.inventory.potion += 3;
+    this.skillMasteryPoints += 1;
+    this.gainExp(200);
+    this.sound.playMasteryUp();
+    this.particles.spawnBurst(this.playerX, this.playerY + 1.5, this.playerZ, 0xfde047, 36, 6.2);
+    this.particles.spawnRing(this.playerX, this.playerY, this.playerZ, 0x62e5ff, 4.2);
+    this.spawnFeedback(
+      '일일 올클리어 보너스! (+200 EXP · 수정 +5 · 물약 +3 · 스킬 +1P)',
+      '#fde047',
+      this.playerX,
+      this.playerY + 2.5,
+      this.playerZ,
+    );
+    this.showBanner('오늘의 일일 퀘스트 6종 전체 완료 보너스를 수령했습니다! (+200 EXP · 마력 수정 +5 · 치유 물약 +3 · 스킬 +1P)');
+
+    if (this.mpClient && this.mpConnected) {
+      this.mpClient.sendPlayerEvent('daily_complete', '일일 퀘스트 올클리어 보너스');
+    }
+
+    this.saveGame(true);
+    this.emitHudSnapshot();
+    return true;
   }
 
   public setTimePreset(preset: TimePreset): void {
@@ -1338,6 +1869,7 @@ export class GameEngine {
   // ---------------- FORGING, CONSUMABLES & ARMOR ----------------
 
   private hasMaterials(cost: Partial<Inventory>): boolean {
+    if (this.gameMode === 'creative') return true;
     return (
       this.inventory.wood >= (cost.wood ?? 0) &&
       this.inventory.stone >= (cost.stone ?? 0) &&
@@ -1350,6 +1882,7 @@ export class GameEngine {
   }
 
   private deductMaterials(cost: Partial<Inventory>): void {
+    if (this.gameMode === 'creative') return;
     this.inventory.wood -= cost.wood ?? 0;
     this.inventory.stone -= cost.stone ?? 0;
     this.inventory.iron -= cost.iron ?? 0;
@@ -1439,25 +1972,153 @@ export class GameEngine {
   }
 
   public usePotion(): boolean {
-    if (this.inventory.potion <= 0) {
-      this.sound.playUiError();
-      this.spawnFeedback('보유한 치유 물약이 없습니다', '#f87171', this.playerX, this.playerY + 2.0, this.playerZ);
-      return false;
-    }
-    if (this.hp >= this.maxHp && this.stamina >= this.maxStamina) {
-      this.spawnFeedback('체력과 기력이 이미 가득합니다', '#cbd5e1', this.playerX, this.playerY + 2.0, this.playerZ);
-      return false;
+    if (this.gameMode !== 'creative') {
+      if (this.inventory.potion <= 0) {
+        this.sound.playUiError();
+        this.spawnFeedback('보유한 치유 물약이 없습니다', '#f87171', this.playerX, this.playerY + 2.0, this.playerZ);
+        return false;
+      }
+      if (this.hp >= this.maxHp && this.stamina >= this.maxStamina) {
+        this.spawnFeedback('체력과 기력이 이미 가득합니다', '#cbd5e1', this.playerX, this.playerY + 2.0, this.playerZ);
+        return false;
+      }
+      this.inventory.potion -= 1;
     }
     this.sound.unlock();
-    this.inventory.potion -= 1;
     this.hp = Math.min(this.maxHp, this.hp + 50);
     this.stamina = Math.min(this.maxStamina, this.stamina + 40);
     this.sound.playHealPotion();
     this.particles.spawnBurst(this.playerX, this.playerY + 1.0, this.playerZ, 0x4ade80, 18, 4.0);
     this.particles.spawnRing(this.playerX, this.playerY, this.playerZ, 0x4ade80, 2.4);
-    this.spawnFeedback('HP +50 · 기력 +40 회복!', '#4ade80', this.playerX, this.playerY + 2.1, this.playerZ);
+    this.spawnFeedback(
+      this.gameMode === 'creative' ? '치유 물약 사용 (크리에이티브 무한)' : 'HP +50 · 기력 +40 회복!',
+      '#4ade80',
+      this.playerX,
+      this.playerY + 2.1,
+      this.playerZ,
+    );
     this.emitHudSnapshot();
     return true;
+  }
+
+  public selectFood(foodId: FoodId): void {
+    this.selectedFood = foodId;
+    this.sound.unlock();
+    this.sound.playEquipSwap();
+    this.emitHudSnapshot();
+  }
+
+  public eatFood(foodId?: FoodId): boolean {
+    let targetId: FoodId = foodId || this.selectedFood;
+    if (this.gameMode !== 'creative' && (this.inventory[targetId] ?? 0) <= 0) {
+      // Auto-fallback to any food in inventory
+      const fallback = FOOD_CATALOG.find((f) => (this.inventory[f.id] ?? 0) > 0);
+      if (!fallback) {
+        this.sound.playUiError();
+        this.spawnFeedback(
+          '보유한 음식이 없습니다 (사과나무·베리덤불 등에서 채집)',
+          '#f87171',
+          this.playerX,
+          this.playerY + 2.0,
+          this.playerZ,
+        );
+        return false;
+      }
+      targetId = fallback.id;
+    }
+
+    const spec = FOOD_CATALOG.find((f) => f.id === targetId);
+    if (!spec) return false;
+
+    if (this.gameMode !== 'creative' && this.hunger >= this.maxHunger - 0.5 && this.hp >= this.maxHp - 0.5) {
+      this.spawnFeedback('배가 이미 든든합니다!', '#cbd5e1', this.playerX, this.playerY + 2.0, this.playerZ);
+      return false;
+    }
+
+    this.sound.unlock();
+    this.selectedFood = targetId;
+    if (this.gameMode !== 'creative') {
+      this.inventory[targetId] = Math.max(0, (this.inventory[targetId] ?? 0) - 1);
+    }
+    this.hunger = Math.min(this.maxHunger, this.hunger + spec.hungerRestore);
+    if (spec.hpRestore > 0) {
+      this.hp = Math.min(this.maxHp, this.hp + spec.hpRestore);
+    }
+    if (spec.staminaRestore > 0) {
+      this.stamina = Math.min(this.maxStamina, this.stamina + spec.staminaRestore);
+    }
+
+    this.sound.playEatFood();
+    this.particles.spawnBurst(this.playerX, this.playerY + 1.15, this.playerZ, 0xfbbf24, 14, 3.4);
+    this.particles.spawnRing(this.playerX, this.playerY, this.playerZ, 0xfb923c, 1.9);
+    const parts = [`배고픔 +${spec.hungerRestore}`];
+    if (spec.hpRestore > 0) parts.push(`HP +${spec.hpRestore}`);
+    if (spec.staminaRestore > 0) parts.push(`기력 +${spec.staminaRestore}`);
+    this.spawnFeedback(
+      `${spec.name} 섭취 · ${parts.join(' · ')}`,
+      '#fde047',
+      this.playerX,
+      this.playerY + 2.15,
+      this.playerZ,
+    );
+    if (this.mpClient && this.mpConnected) {
+      this.mpClient.sendPlayerEvent('eat_food', spec.name);
+    }
+    this.emitHudSnapshot();
+    return true;
+  }
+
+  public cycleCameraMode(): void {
+    const order: CameraPerspectiveMode[] = ['third_back', 'first', 'third_front'];
+    const idx = order.indexOf(this.cameraMode);
+    this.cameraMode = order[(idx + 1) % order.length];
+    if (this.catRig) {
+      this.catRig.root.visible = this.phase !== 'playing' || this.cameraMode !== 'first';
+    }
+    const labelMap: Record<CameraPerspectiveMode, string> = {
+      third_back: '3인칭 후면 시점',
+      first: '1인칭 시점',
+      third_front: '3인칭 전면 시점',
+    };
+    this.sound.unlock();
+    this.sound.playEquipSwap();
+    this.spawnFeedback(
+      `카메라: ${labelMap[this.cameraMode]} (F5)`,
+      '#93c5fd',
+      this.playerX,
+      this.playerY + 2.15,
+      this.playerZ,
+    );
+    this.emitHudSnapshot();
+  }
+
+  public toggleFullscreen(): void {
+    if (typeof document === 'undefined') return;
+    if (!document.fullscreenElement) {
+      document.documentElement
+        .requestFullscreen()
+        .then(() => {
+          this.isFullscreen = true;
+          this.emitHudSnapshot();
+        })
+        .catch(() => {
+          this.spawnFeedback(
+            '이 환경에서는 전체화면 전환이 제한되어 있습니다',
+            '#fbbf24',
+            this.playerX,
+            this.playerY + 2.0,
+            this.playerZ,
+          );
+        });
+    } else {
+      document
+        .exitFullscreen()
+        .then(() => {
+          this.isFullscreen = false;
+          this.emitHudSnapshot();
+        })
+        .catch(() => {});
+    }
   }
 
   public craftArmor(armorId: ArmorId): boolean {
@@ -1495,7 +2156,13 @@ export class GameEngine {
   }
 
   public equipArmor(armorId: ArmorId): boolean {
-    if (!this.ownedArmors.includes(armorId)) return false;
+    if (!this.ownedArmors.includes(armorId)) {
+      if (this.gameMode === 'creative') {
+        this.ownedArmors.push(armorId);
+      } else {
+        return false;
+      }
+    }
     const spec = ARMORS_CATALOG.find((a) => a.id === armorId);
     if (!spec) return false;
     if (this.equippedArmor === armorId) return true;
@@ -1518,7 +2185,13 @@ export class GameEngine {
   }
 
   public equipWeapon(weaponId: WeaponId, silent = false, isManual = true): boolean {
-    if (!this.ownedWeapons.includes(weaponId)) return false;
+    if (!this.ownedWeapons.includes(weaponId)) {
+      if (this.gameMode === 'creative') {
+        this.ownedWeapons.push(weaponId);
+      } else {
+        return false;
+      }
+    }
     if (isManual) {
       this.manualEquipHoldTimer = 4.5;
     }
@@ -1553,6 +2226,108 @@ export class GameEngine {
     return this.autoEquipTool;
   }
 
+  public spawnMonsterFromEgg(eggId: SpawnEggId): boolean {
+    const spec = SPAWN_EGGS_CATALOG.find((e) => e.id === eggId);
+    if (!spec) return false;
+    this.ensureWorldBooted();
+    this.sound.unlock();
+
+    const spawnDist = spec.category === 'boss' ? 5.6 : 4.2;
+    let sx = this.playerX + Math.sin(this.playerYaw) * spawnDist;
+    let sz = this.playerZ + Math.cos(this.playerYaw) * spawnDist;
+
+    if (!this.inTrialDungeon) {
+      const maxR = Math.max(12, this.frontierRingRadius - 2.5);
+      const rDist = Math.hypot(sx, sz);
+      if (rDist > maxR) {
+        sx = (sx / rDist) * maxR;
+        sz = (sz / rDist) * maxR;
+      }
+    }
+
+    const id = `egg_${eggId}_${Date.now()}_${Math.floor(Math.random() * 900 + 100)}`;
+    const isSpirit =
+      spec.species === 'water_spirit' ||
+      spec.species === 'wind_spirit' ||
+      spec.species === 'fire_spirit' ||
+      spec.species === 'earth_spirit';
+
+    const m =
+      isSpirit && spec.spiritRank
+        ? this.monsterLib.createElementalSpirit(
+            id,
+            spec.species as 'water_spirit' | 'wind_spirit' | 'fire_spirit' | 'earth_spirit',
+            spec.spiritRank,
+            sx,
+            sz,
+            this.worldTier,
+          )
+        : this.monsterLib.createMonster(id, spec.species, sx, sz, this.worldTier);
+
+    m.isNightOnly = false;
+    m.aggroTimer = 0;
+    if (this.inTrialDungeon) {
+      m.y = TRIAL_DUNGEON_Y;
+      m.group.position.set(sx, TRIAL_DUNGEON_Y, sz);
+    }
+
+    this.scene.add(m.group);
+    this.monsters.push(m);
+
+    const accentInt = parseInt(spec.accentHex.replace('#', ''), 16) || 0xfacc15;
+    this.sound.playCollectChime();
+    this.particles.spawnRing(m.x, m.y + 0.12, m.z, accentInt, spec.category === 'boss' ? 3.8 : 2.3);
+    this.particles.spawnBurst(m.x, m.y + 1.0, m.z, accentInt, spec.category === 'boss' ? 24 : 14, 4.6);
+    this.spawnFeedback(`${m.label} 소환!`, spec.accentHex, m.x, m.y + m.headHeight + 0.4, m.z);
+
+    if (this.mpClient && this.mpConnected) {
+      this.mpClient.sendSpawnEgg(id, eggId, sx, sz, this.worldTier);
+    }
+
+    this.emitHudSnapshot();
+    return true;
+  }
+
+  private spawnRemoteEggMonster(payload: SharedSpawnedMonsterPayload): void {
+    if (!payload || !payload.id) return;
+    if (this.monsters.some((existing) => existing.id === payload.id)) return;
+    const spec = SPAWN_EGGS_CATALOG.find((e) => e.id === payload.eggId);
+    if (!spec) return;
+    this.ensureWorldBooted();
+
+    const tier = Math.max(1, Math.min(WORLD_TIERS.length, payload.worldTier || this.worldTier));
+    const isSpirit =
+      spec.species === 'water_spirit' ||
+      spec.species === 'wind_spirit' ||
+      spec.species === 'fire_spirit' ||
+      spec.species === 'earth_spirit';
+
+    const m =
+      isSpirit && spec.spiritRank
+        ? this.monsterLib.createElementalSpirit(
+            payload.id,
+            spec.species as 'water_spirit' | 'wind_spirit' | 'fire_spirit' | 'earth_spirit',
+            spec.spiritRank,
+            payload.x,
+            payload.z,
+            tier,
+          )
+        : this.monsterLib.createMonster(payload.id, spec.species, payload.x, payload.z, tier);
+
+    m.isNightOnly = false;
+    m.aggroTimer = 0;
+    this.scene.add(m.group);
+    this.monsters.push(m);
+
+    const accentInt = parseInt(spec.accentHex.replace('#', ''), 16) || 0xfacc15;
+    this.particles.spawnRing(m.x, m.y + 0.12, m.z, accentInt, spec.category === 'boss' ? 3.8 : 2.3);
+    this.particles.spawnBurst(m.x, m.y + 1.0, m.z, accentInt, spec.category === 'boss' ? 20 : 12, 4.2);
+    if (payload.summonerName) {
+      this.showBanner(`[멀티플레이] ${payload.summonerName}님이 생성알로 ${m.label}을(를) 소환했습니다!`);
+    }
+    this.emitHudSnapshot();
+  }
+
   public setHotbarSlot(slotIndex: number, itemId: HotbarItemId): void {
     if (slotIndex < 0 || slotIndex >= this.hotbarSlots.length) return;
     this.hotbarSlots[slotIndex] = itemId;
@@ -1568,7 +2343,7 @@ export class GameEngine {
 
     if (item.startsWith('weapon:')) {
       const wId = item.slice(7) as WeaponId;
-      if (this.ownedWeapons.includes(wId)) {
+      if (this.gameMode === 'creative' || this.ownedWeapons.includes(wId)) {
         this.equipWeapon(wId, false, true);
       } else {
         const spec = WEAPONS_CATALOG.find((w) => w.id === wId);
@@ -1585,6 +2360,55 @@ export class GameEngine {
       return;
     }
 
+    if (item.startsWith('armor:')) {
+      const aId = item.slice(6) as ArmorId;
+      if (this.gameMode === 'creative' || this.ownedArmors.includes(aId)) {
+        this.equipArmor(aId);
+      } else {
+        this.sound.playUiError();
+        this.callbacks.onOpenWorkshop('armor');
+      }
+      return;
+    }
+
+    if (item.startsWith('food:')) {
+      const fId = item.slice(5) as FoodId;
+      this.eatFood(fId);
+      return;
+    }
+
+    if (item.startsWith('egg:')) {
+      const eId = item.slice(4) as SpawnEggId;
+      this.spawnMonsterFromEgg(eId);
+      return;
+    }
+
+    if (item.startsWith('material:')) {
+      const mId = item.slice(9) as MaterialItemId;
+      const spec = MATERIAL_ITEMS_CATALOG.find((m) => m.id === mId);
+      if (this.gameMode === 'creative') {
+        this.inventory[mId] = (this.inventory[mId] ?? 0) + 10;
+        this.sound.playCollectChime();
+        this.spawnFeedback(
+          `${spec ? spec.name : mId} +10 지급 (보유 ${this.inventory[mId]})`,
+          spec ? spec.accentHex : '#fde047',
+          this.playerX,
+          this.playerY + 2.05,
+          this.playerZ,
+        );
+        this.emitHudSnapshot();
+      } else {
+        this.spawnFeedback(
+          `${spec ? spec.name : mId}: ${this.inventory[mId] ?? 0}개 보유`,
+          spec ? spec.accentHex : '#e2e8f0',
+          this.playerX,
+          this.playerY + 2.0,
+          this.playerZ,
+        );
+      }
+      return;
+    }
+
     if (item === 'action:gather') {
       this.performInteractOrGather();
     } else if (item === 'action:sapling') {
@@ -1593,6 +2417,8 @@ export class GameEngine {
       this.placeLantern();
     } else if (item === 'action:potion') {
       this.usePotion();
+    } else if (item === 'action:food') {
+      this.eatFood();
     } else if (item === 'action:forge') {
       this.callbacks.onOpenWorkshop('forge');
     } else if (item === 'action:housing') {
@@ -1712,7 +2538,7 @@ export class GameEngine {
   public plantSapling(): boolean {
     if (this.phase !== 'playing') return false;
     this.sound.unlock();
-    if (this.inventory.wood < 1) {
+    if (this.gameMode !== 'creative' && this.inventory.wood < 1) {
       this.sound.playUiError();
       this.spawnFeedback('원목 1개가 필요합니다', '#f87171', this.playerX, this.playerY + 1.9, this.playerZ);
       return false;
@@ -1735,7 +2561,9 @@ export class GameEngine {
       }
     }
 
-    this.inventory.wood -= 1;
+    if (this.gameMode !== 'creative') {
+      this.inventory.wood -= 1;
+    }
     this.plantedSaplings += 1;
     const treeKind = this.worldTier === 3 ? 'birch_tree' : this.worldTier === 2 ? 'pine_tree' : 'oak_tree';
     const id = `sapling_${this.nodeCounter++}`;
@@ -1750,6 +2578,10 @@ export class GameEngine {
     this.spawnFeedback(`묘목 심기 완료!${rainNote}`, '#86efac', px, node.y + 1.6, pz);
     this.gainExp(8);
     this.gainProficiencyExp('logging', 10);
+    this.recordDailyProgress('daily_build_or_plant', 1);
+    if (this.mpConnected && this.remotePlayers.size > 0) {
+      this.recordDailyProgress('daily_coop_challenge', 1);
+    }
     this.emitHudSnapshot();
     return true;
   }
@@ -1757,7 +2589,7 @@ export class GameEngine {
   public placeLantern(): boolean {
     if (this.phase !== 'playing') return false;
     this.sound.unlock();
-    if (this.inventory.wood < 2 || this.inventory.stone < 1) {
+    if (this.gameMode !== 'creative' && (this.inventory.wood < 2 || this.inventory.stone < 1)) {
       this.sound.playUiError();
       this.spawnFeedback('원목 2 · 석재 1 필요', '#f87171', this.playerX, this.playerY + 1.9, this.playerZ);
       return false;
@@ -1771,8 +2603,10 @@ export class GameEngine {
       return false;
     }
 
-    this.inventory.wood -= 2;
-    this.inventory.stone -= 1;
+    if (this.gameMode !== 'creative') {
+      this.inventory.wood -= 2;
+      this.inventory.stone -= 1;
+    }
 
     const lantern = this.assets.createLanternPost(px, pz);
     lantern.group.rotation.y = this.playerYaw + Math.PI * 0.5;
@@ -3586,6 +4420,10 @@ export class GameEngine {
     );
     this.gainExp(12);
     this.gainProficiencyExp('craft', 16);
+    this.recordDailyProgress('daily_build_or_plant', 1);
+    if (this.mpConnected && this.remotePlayers.size > 0) {
+      this.recordDailyProgress('daily_coop_challenge', 1);
+    }
     this.saveGame(true);
     this.updateGhostTransformAndValidity();
     this.emitHudSnapshot();
@@ -4254,15 +5092,130 @@ export class GameEngine {
     this.emitHudSnapshot();
   }
 
-  public joinMultiplayerRoom(nextRoomId: string): void {
+  public joinMultiplayerRoom(nextRoomId: string, preferredMode?: GameMode): void {
+    if (!this.mpClient) {
+      this.initMultiplayer();
+    }
     if (!this.mpClient) return;
     for (const id of Array.from(this.remotePlayers.keys())) {
       this.removeRemotePlayer(id);
     }
-    this.mpClient.joinRoom(nextRoomId);
+    this.roomDailyProgress = {};
+    this.roomDailyContributors = {};
+    const targetMode = preferredMode ?? this.gameMode;
+    this.mpRoomGameMode = targetMode;
+    this.mpClient.joinRoom(nextRoomId, targetMode);
     this.mpRoomId = this.mpClient.roomId;
     this.showBanner(`[멀티플레이] "${this.mpRoomId}" 공유 월드 방에 접속합니다...`);
     this.emitHudSnapshot();
+  }
+
+  private applyRoomGameModeSync(mode: GameMode): void {
+    this.mpRoomGameMode = mode;
+    if (this.gameMode === mode) {
+      this.emitHudSnapshot();
+      return;
+    }
+    this.gameMode = mode;
+    if (mode === 'creative') {
+      this.applyCreativeUnlocks();
+      const defaults = getCreativeDefaultHotbarForClass(this.playerClass);
+      const nextSlots = [...this.hotbarSlots];
+      for (const item of defaults) {
+        if (nextSlots.length >= 9) break;
+        if (!nextSlots.includes(item)) nextSlots.push(item);
+      }
+      this.hotbarSlots = nextSlots.slice(0, 9);
+      this.showBanner('[멀티 방 동기화] 크리에이티브 모드로 전환되었습니다 (무한 체력·배고픔·달리기 · 9칸 바 활성)');
+    } else {
+      const defaults = getDefaultHotbarForClass(this.playerClass);
+      this.hotbarSlots = this.hotbarSlots.slice(0, 7);
+      if (this.hotbarSlots.length < 7) {
+        this.hotbarSlots = [...defaults];
+      }
+      this.showBanner('[멀티 방 동기화] 서바이벌 모드로 전환되었습니다');
+    }
+    this.emitHudSnapshot();
+  }
+
+  private isOffline = typeof navigator !== 'undefined' ? !navigator.onLine : false;
+
+  public setOfflineMode(offline: boolean): void {
+    this.isOffline = offline;
+    this.mpClient?.setOfflineMode(offline);
+    if (offline) {
+      for (const id of Array.from(this.remotePlayers.keys())) {
+        this.removeRemotePlayer(id);
+      }
+      this.mpConnected = false;
+      this.mpTransport = 'offline';
+      this.emitHudSnapshot();
+    }
+  }
+
+  public setTitleCameraMode(mode: 'scenic' | 'character'): void {
+    this.titleCameraMode = mode;
+  }
+
+  public applySettings(next: GameSettings): void {
+    this.settings = { ...next };
+
+    if (this.renderer) {
+      const baseDpr = this.isSoftwareGl ? 0.85 : Math.min(window.devicePixelRatio || 1, 1.5);
+      const targetDpr = THREE.MathUtils.clamp(baseDpr * next.resolutionScale, 0.55, 1.75);
+      this.renderer.setPixelRatio(targetDpr);
+      this.renderer.setSize(
+        this.container.clientWidth || window.innerWidth,
+        this.container.clientHeight || window.innerHeight,
+      );
+
+      const allowShadows = next.shadowsEnabled && !this.isSoftwareGl;
+      this.renderer.shadowMap.enabled = allowShadows;
+      if (this.sunLight) {
+        this.sunLight.castShadow = allowShadows;
+        const mapDim =
+          next.shadowQuality === 'low' ? 512 : next.shadowQuality === 'medium' ? 1024 : 1536;
+        if (this.sunLight.shadow.mapSize.width !== mapDim) {
+          this.sunLight.shadow.mapSize.set(mapDim, mapDim);
+          if (this.sunLight.shadow.map) {
+            this.sunLight.shadow.map.dispose();
+            this.sunLight.shadow.map = null;
+          }
+        }
+      }
+      this.renderer.shadowMap.needsUpdate = true;
+    }
+
+    const farPlane = next.viewDistance === 'near' ? 155 : next.viewDistance === 'medium' ? 245 : 460;
+    this.cullDistance = next.viewDistance === 'near' ? 76 : next.viewDistance === 'medium' ? 124 : 210;
+    if (this.camera && Math.abs(this.camera.far - farPlane) > 1) {
+      this.camera.far = farPlane;
+      this.camera.updateProjectionMatrix();
+    }
+
+    if (this.meadowGrassMesh) {
+      const count = Math.floor(this.meadowGrassMaxCount * THREE.MathUtils.clamp(next.grassDensity, 0, 1));
+      this.meadowGrassMesh.count = count;
+      this.meadowGrassMesh.visible = count > 0;
+    }
+
+    if (this.environment) {
+      const pScale =
+        next.particlesLevel === 'off'
+          ? 0
+          : next.particlesLevel === 'low'
+            ? 0.32
+            : next.particlesLevel === 'medium'
+              ? 0.65
+              : 1.0;
+      this.environment.applyOptimization({
+        particleScale: pScale,
+        weatherEffects: next.weatherEffects,
+        viewDistance: next.viewDistance,
+      });
+    }
+
+    this.sound.setVolumes(next.masterVolume, next.bgmVolume, next.sfxVolume);
   }
 
   private initMultiplayer(): void {
@@ -4287,6 +5240,31 @@ export class GameEngine {
         this.mpRoomId = info.roomId;
         this.mpPlayerId = info.playerId;
         this.mpPlayerName = info.playerName;
+        this.mpRoomGameMode = info.roomGameMode || 'survival';
+
+        // Sync room game mode when joining an active room hosted by someone else
+        if (info.players.length > 0 && info.roomGameMode && info.roomGameMode !== this.gameMode) {
+          this.applyRoomGameModeSync(info.roomGameMode);
+        } else if (info.players.length === 0 && this.gameMode === 'creative' && info.roomGameMode !== 'creative') {
+          this.mpClient?.sendRoomMode('creative');
+          this.mpRoomGameMode = 'creative';
+        }
+
+        // Hydrate shared room daily quest progress
+        if (info.dailyQuests) {
+          this.applyRemoteDailyState(info.dailyQuests);
+        }
+        // Seed empty room with any local daily progress already earned today
+        if (info.players.length === 0) {
+          this.ensureDailyQuestDate();
+          for (const spec of DAILY_QUESTS_CATALOG) {
+            const lv = this.dailyQuestState.progress[spec.id] ?? 0;
+            const rv = this.roomDailyProgress[spec.id] ?? 0;
+            if (lv > rv) {
+              this.mpClient?.sendDailyProgress(spec.id, lv - rv);
+            }
+          }
+        }
 
         // Hydrate remote players already in room
         for (const rp of info.players) {
@@ -4305,6 +5283,12 @@ export class GameEngine {
           // Seed empty room with our locally saved houses so joining friends see them immediately
           for (const h of this.placedHouses) {
             this.broadcastHousingTile(h);
+          }
+        }
+        // Hydrate spawn-egg monsters already summoned in this room
+        if (info.spawnedMonsters && info.spawnedMonsters.length > 0) {
+          for (const sm of info.spawnedMonsters) {
+            this.spawnRemoteEggMonster({ ...sm, summonerName: '' });
           }
         }
         this.emitHudSnapshot();
@@ -4340,6 +5324,27 @@ export class GameEngine {
       onPlotClaim: (plot) => {
         this.applyRemotePlotClaim(plot);
         this.emitHudSnapshot();
+      },
+      onDailyQuestState: (daily) => {
+        this.applyRemoteDailyState(daily);
+        this.emitHudSnapshot();
+      },
+      onRemoteSpawnEgg: (monster) => {
+        this.spawnRemoteEggMonster(monster);
+      },
+      onRoomModeChange: (gameMode) => {
+        this.applyRoomGameModeSync(gameMode);
+      },
+      onPlayerEvent: (event) => {
+        if (event.kind === 'eat_food') {
+          this.showBanner(`[멀티 협동] ${event.playerName}님이 ${event.label}을(를) 맛있게 먹었습니다`);
+        } else if (event.kind === 'daily_complete') {
+          this.sound.playCollectChime();
+          this.showBanner(`[멀티 일일 퀘스트] ${event.playerName}님이 [${event.label}] 보상을 완료했습니다!`);
+        } else if (event.kind === 'boss_defeat') {
+          this.sound.playQuestComplete();
+          this.showBanner(`[멀티 보스 토벌] ${event.playerName}님이 [${event.label}]을(를) 격파했습니다!`);
+        }
       },
     });
     this.mpRoomId = this.mpClient.roomId;
@@ -4627,6 +5632,11 @@ export class GameEngine {
     return {
       version: 2,
       savedAt: Date.now(),
+      worldId: this.currentWorldId || undefined,
+      worldName: this.currentWorldName,
+      gameMode: this.gameMode,
+      isMultiplayer: this.worldIsMultiplayer,
+      roomCode: this.worldRoomCode,
       worldTier: this.worldTier,
       playerClass: this.playerClass,
       player: {
@@ -4635,6 +5645,8 @@ export class GameEngine {
         yaw: this.playerYaw,
         hp: Math.round(this.hp),
         stamina: Math.round(this.stamina),
+        hunger: Math.round(this.hunger),
+        selectedFood: this.selectedFood,
         level: this.level,
         exp: this.exp,
         nextExp: this.nextExp,
@@ -4670,6 +5682,12 @@ export class GameEngine {
         craft: { ...this.proficiencies.craft },
       },
       claimedQuests: Array.from(this.claimedQuests),
+      dailyQuests: {
+        dateKey: this.dailyQuestState.dateKey,
+        progress: { ...this.dailyQuestState.progress },
+        claimed: [...this.dailyQuestState.claimed],
+        allClearClaimed: this.dailyQuestState.allClearClaimed,
+      },
       environment: {
         timeOfDay: this.environment ? this.environment.timeOfDay : 9.5,
         timePaused: this.environment ? this.environment.timePaused : false,
@@ -4716,7 +5734,9 @@ export class GameEngine {
 
   public saveGame(silent = false): boolean {
     const payload = this.buildSavePayload();
-    const ok = saveGameToStorage(payload);
+    const ok = this.currentWorldId
+      ? saveWorldData(this.currentWorldId, payload)
+      : saveGameToStorage(payload);
     if (ok) {
       this.lastSavedAt = payload.savedAt;
       this.saveSummary = {
@@ -4792,6 +5812,14 @@ export class GameEngine {
       fang: data.inventory.fang ?? 0,
       essence: data.inventory.essence ?? 0,
       potion: data.inventory.potion ?? 1,
+      apple: data.inventory.apple ?? 2,
+      berry: data.inventory.berry ?? 2,
+      mushroom: data.inventory.mushroom ?? 0,
+      honey: data.inventory.honey ?? 0,
+      coconut: data.inventory.coconut ?? 0,
+      cactus_fruit: data.inventory.cactus_fruit ?? 0,
+      carrot: data.inventory.carrot ?? 0,
+      meat: data.inventory.meat ?? 0,
     };
     this.upgrades = {
       toolLevel: data.upgrades?.toolLevel ?? 1,
@@ -4816,9 +5844,28 @@ export class GameEngine {
       ? data.equippedArmor
       : restoredClass.starterArmor;
 
+    this.gameMode = data.gameMode === 'creative' ? 'creative' : 'survival';
+    if (data.worldId) this.currentWorldId = data.worldId;
+    if (data.worldName) this.currentWorldName = data.worldName;
+    if (typeof data.isMultiplayer === 'boolean') this.worldIsMultiplayer = data.isMultiplayer;
+    if (data.roomCode) this.worldRoomCode = data.roomCode;
+
     this.autoEquipTool = data.autoEquipTool ?? true;
-    if (Array.isArray(data.hotbarSlots) && data.hotbarSlots.length === 6) {
-      this.hotbarSlots = [...data.hotbarSlots];
+    if (Array.isArray(data.hotbarSlots) && data.hotbarSlots.length >= 6) {
+      const restoredSlots = [...data.hotbarSlots];
+      if (this.gameMode === 'creative') {
+        const defaults = getCreativeDefaultHotbarForClass(this.playerClass);
+        for (const item of defaults) {
+          if (restoredSlots.length >= 9) break;
+          if (!restoredSlots.includes(item)) restoredSlots.push(item);
+        }
+        this.hotbarSlots = restoredSlots.slice(0, 9);
+      } else {
+        if (!restoredSlots.includes('action:food')) {
+          restoredSlots.splice(Math.min(5, restoredSlots.length), 0, 'action:food');
+        }
+        this.hotbarSlots = restoredSlots.slice(0, 7);
+      }
     }
 
     this.catRig.setClass(this.playerClass);
@@ -4839,6 +5886,8 @@ export class GameEngine {
     this.nextExp = data.player.nextExp ?? 40;
     this.hp = THREE.MathUtils.clamp(data.player.hp ?? this.maxHp, 10, this.maxHp);
     this.stamina = THREE.MathUtils.clamp(data.player.stamina ?? this.maxStamina, 0, this.maxStamina);
+    this.hunger = THREE.MathUtils.clamp(data.player.hunger ?? this.maxHunger, 0, this.maxHunger);
+    this.selectedFood = data.player.selectedFood ?? 'apple';
     this.catRig.root.position.set(this.playerX, this.playerY, this.playerZ);
     this.catRig.root.rotation.y = this.playerYaw;
 
@@ -4880,6 +5929,24 @@ export class GameEngine {
     }
     this.claimedQuests = new Set(data.claimedQuests || []);
     this.notifiedQuests = new Set(data.claimedQuests || []);
+    this.ensureDailyQuestDate();
+    if (data.dailyQuests && data.dailyQuests.dateKey === this.dailyQuestState.dateKey) {
+      for (const spec of DAILY_QUESTS_CATALOG) {
+        const savedVal = data.dailyQuests.progress?.[spec.id] ?? 0;
+        const currVal = this.dailyQuestState.progress[spec.id] ?? 0;
+        if (savedVal > currVal) {
+          this.dailyQuestState.progress[spec.id] = savedVal;
+        }
+      }
+      const mergedClaimed = new Set<DailyQuestId>([
+        ...this.dailyQuestState.claimed,
+        ...(data.dailyQuests.claimed || []),
+      ]);
+      this.dailyQuestState.claimed = Array.from(mergedClaimed);
+      this.dailyQuestState.allClearClaimed =
+        this.dailyQuestState.allClearClaimed || Boolean(data.dailyQuests.allClearClaimed);
+      saveDailyQuestState(this.dailyQuestState);
+    }
 
     // Restore environment
     if (data.environment && this.environment) {
@@ -5043,7 +6110,18 @@ export class GameEngine {
       fang: 0,
       essence: 0,
       potion: 1,
+      apple: 2,
+      berry: 2,
+      mushroom: 0,
+      honey: 0,
+      coconut: 0,
+      cactus_fruit: 0,
+      carrot: 0,
+      meat: 0,
     };
+    this.hunger = this.maxHunger;
+    this.selectedFood = 'apple';
+    this.starvationTickTimer = 0;
     const clsReset = getClassSpec(this.playerClass);
     this.upgrades = { toolLevel: 1, bootsLevel: 1, armorLevel: 1 };
     this.ownedWeapons = [clsReset.starterWeapon];
@@ -5134,6 +6212,7 @@ export class GameEngine {
     window.addEventListener('keyup', this.handleKeyUp);
     window.addEventListener('blur', this.handleBlur);
     window.addEventListener('resize', this.handleResize);
+    document.addEventListener('fullscreenchange', this.handleFullscreenChange);
 
     const dom = this.renderer?.domElement;
     if (dom) {
@@ -5145,6 +6224,11 @@ export class GameEngine {
       dom.addEventListener('contextmenu', this.handleContextMenu);
     }
   }
+
+  private handleFullscreenChange = () => {
+    this.isFullscreen = Boolean(document.fullscreenElement);
+    this.emitHudSnapshot();
+  };
 
   public setMobileMoveInput(right: number, forward: number, sprint: boolean): void {
     this.mobileMoveX = THREE.MathUtils.clamp(right, -1, 1);
@@ -5205,6 +6289,20 @@ export class GameEngine {
       e.preventDefault();
       if (this.phase === 'playing' || this.phase === 'paused') {
         this.saveGame(false);
+      }
+      return;
+    }
+
+    if (e.code === 'F2') {
+      e.preventDefault();
+      this.toggleFullscreen();
+      return;
+    }
+
+    if (e.code === 'F5') {
+      e.preventDefault();
+      if (this.phase === 'playing') {
+        this.cycleCameraMode();
       }
       return;
     }
@@ -5300,6 +6398,12 @@ export class GameEngine {
         this.activateHotbarSlot(4);
       } else if (e.code === 'Digit6') {
         this.activateHotbarSlot(5);
+      } else if (e.code === 'Digit7') {
+        this.activateHotbarSlot(6);
+      } else if (e.code === 'Digit8') {
+        this.activateHotbarSlot(7);
+      } else if (e.code === 'Digit9') {
+        this.activateHotbarSlot(8);
       }
     }
   };
@@ -5380,8 +6484,9 @@ export class GameEngine {
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
 
-    const sens = e.pointerType === 'touch' ? 0.0072 : 0.0058;
-    const pitchSens = e.pointerType === 'touch' ? 0.0055 : 0.0046;
+    const sensMult = this.settings.cameraSensitivity || 1.0;
+    const sens = (e.pointerType === 'touch' ? 0.0072 : 0.0058) * sensMult;
+    const pitchSens = (e.pointerType === 'touch' ? 0.0055 : 0.0046) * sensMult;
     this.cameraYaw -= dx * sens;
     // Allow negative pitch (-0.95 rad ≈ -54°) so players can smoothly look UP at ceilings & ceiling lights!
     this.cameraPitch = THREE.MathUtils.clamp(this.cameraPitch + dy * pitchSens, -0.95, 1.15);
@@ -5836,14 +6941,16 @@ export class GameEngine {
       return false;
     }
 
-    if (this.stamina < stats.spec.staminaCost) {
+    if (this.gameMode !== 'creative' && this.stamina < stats.spec.staminaCost) {
       this.sound.playUiError();
       this.spawnFeedback('기력이 부족합니다', '#f87171', this.playerX, this.playerY + 2.0, this.playerZ);
       return false;
     }
 
     this.cancelEmote(true);
-    this.stamina = Math.max(0, this.stamina - stats.spec.staminaCost);
+    if (this.gameMode !== 'creative') {
+      this.stamina = Math.max(0, this.stamina - stats.spec.staminaCost);
+    }
     this.skillCooldowns[skillId] = stats.cooldownTotal;
     this.activeSkillAnim = skillId;
     this.skillAnimDuration =
@@ -6166,6 +7273,7 @@ export class GameEngine {
   }
 
   private applyPlayerDamage(rawDamage: number, sourceLabel?: string): void {
+    if (this.gameMode === 'creative') return;
     const reduction = this.getPlayerDamageReduction();
     const taken = Math.max(2, Math.round(rawDamage * (1 - reduction)));
     this.hp = Math.max(0, this.hp - taken);
@@ -6214,7 +7322,9 @@ export class GameEngine {
 
     m.hp = Math.max(0, m.hp - scaled);
     m.hitFlashTimer = 0.16;
-    m.aggroTimer = m.isBoss ? 15.0 : 9.0;
+    if (this.gameMode !== 'creative') {
+      m.aggroTimer = m.isBoss ? 15.0 : 9.0;
+    }
 
     const dx = m.x - this.playerX;
     const dz = m.z - this.playerZ;
@@ -6247,6 +7357,10 @@ export class GameEngine {
       if (m.telegraphGroup) m.telegraphGroup.visible = false;
 
       this.monstersDefeated += 1;
+      this.recordDailyProgress('daily_hunt_monsters', 1);
+      if (this.mpConnected && this.remotePlayers.size > 0) {
+        this.recordDailyProgress('daily_coop_challenge', 1);
+      }
       const lootParts: string[] = [];
       if (m.drops.leather > 0) {
         this.inventory.leather += m.drops.leather;
@@ -6269,6 +7383,18 @@ export class GameEngine {
       if (m.drops.crystal && m.drops.crystal > 0) {
         this.inventory.crystal += m.drops.crystal;
         lootParts.push(`마력 수정 +${m.drops.crystal}`);
+      }
+      // Wild beasts & bosses also drop hearty Roasted Meat for hunger survival
+      const meatDrop = m.isBoss
+        ? 3
+        : m.species === 'meadow_boar' || m.species === 'ember_wolf' || m.species === 'frost_wolf'
+          ? 2
+          : Math.random() < 0.55
+            ? 1
+            : 0;
+      if (meatDrop > 0) {
+        this.inventory.meat += meatDrop;
+        lootParts.push(`구운 고기 +${meatDrop}`);
       }
 
       if (m.isTrialBoss && m.trialFloor) {
@@ -6312,6 +7438,10 @@ export class GameEngine {
           `시련의 탑 ${clearedFloor}층 [${m.label}] 격파! (${lootParts.join(' · ')}${masteryNote})${nextUnlockText}`,
         );
         this.gainProficiencyExp('combat', 110);
+        this.recordDailyProgress('daily_coop_challenge', 1);
+        if (this.mpClient && this.mpConnected) {
+          this.mpClient.sendPlayerEvent('boss_defeat', `시련의 탑 ${clearedFloor}층 ${m.label}`);
+        }
         this.saveGame(true);
       } else if (m.isBoss) {
         this.bossesDefeated += 1;
@@ -6331,6 +7461,10 @@ export class GameEngine {
           `중간 보스 [${m.label}] 토벌 성공! (${lootParts.join(' · ')} · 스킬 마스터리 +1P)`,
         );
         this.gainProficiencyExp('combat', 90);
+        this.recordDailyProgress('daily_coop_challenge', 1);
+        if (this.mpClient && this.mpConnected) {
+          this.mpClient.sendPlayerEvent('boss_defeat', m.label);
+        }
         this.saveGame(true);
       } else {
         this.sound.playMonsterDefeat();
@@ -6507,11 +7641,12 @@ export class GameEngine {
 
     this.playerYaw = Math.atan2(node.x - this.playerX, node.z - this.playerZ);
 
+    const isFoodNode = Boolean(node.foodYield);
     const isTree = node.kind === 'oak_tree' || node.kind === 'pine_tree' || node.kind === 'birch_tree';
     const isCrystal = node.kind === 'crystal_cluster';
 
     // Context-aware auto weapon switch right before striking a resource
-    if (this.autoEquipTool && this.ownedWeapons.length > 1) {
+    if (!isFoodNode && this.autoEquipTool && this.ownedWeapons.length > 1) {
       const optimal = this.selectBestWeaponForContext(isTree ? 'tree' : 'rock');
       if (optimal !== this.equippedWeapon) {
         this.equipWeapon(optimal, false, false);
@@ -6520,13 +7655,13 @@ export class GameEngine {
     }
 
     const spec = this.getEquippedSpec();
-    this.gatherCooldown = 0.42 / spec.swingSpeedMult;
+    this.gatherCooldown = (isFoodNode ? 0.34 : 0.42) / spec.swingSpeedMult;
     this.swingTimer = 1.0;
     this.activeGatherNode = node;
 
-    const profLvlDelta = Math.max(0, (isTree ? this.proficiencies.logging.level : this.proficiencies.mining.level) - 1);
-    const baseDmg = isTree ? spec.treeDamage : spec.rockDamage;
-    const dmg = Math.max(1, Math.round(baseDmg * (1 + profLvlDelta * 0.1)));
+    const profLvlDelta = Math.max(0, (isTree || isFoodNode ? this.proficiencies.logging.level : this.proficiencies.mining.level) - 1);
+    const baseDmg = isFoodNode ? 1 : isTree ? spec.treeDamage : spec.rockDamage;
+    const dmg = isFoodNode ? 1 : Math.max(1, Math.round(baseDmg * (1 + profLvlDelta * 0.1)));
 
     node.hp = Math.max(0, node.hp - dmg);
     node.shakeTimer = 0.28;
@@ -6534,7 +7669,26 @@ export class GameEngine {
 
     const isFinal = node.hp <= 0;
 
-    if (isTree) {
+    if (isFoodNode) {
+      this.sound.playWoodChop(false);
+      const foodBurstColor =
+        node.foodYield === 'apple'
+          ? 0xef4444
+          : node.foodYield === 'berry'
+            ? 0xec4899
+            : node.foodYield === 'honey'
+              ? 0xfacc15
+              : node.foodYield === 'carrot'
+                ? 0xf97316
+                : node.foodYield === 'cactus_fruit'
+                  ? 0xe11d48
+                  : node.foodYield === 'coconut'
+                    ? 0x84cc16
+                    : 0xf59e0b;
+      this.particles.spawnBurst(node.x, node.y + 1.1, node.z, foodBurstColor, isFinal ? 18 : 8, isFinal ? 4.4 : 3.0);
+      this.particles.spawnBurst(node.x, node.y + 1.3, node.z, 0x4ade80, isFinal ? 12 : 5, 3.2);
+      this.gainProficiencyExp('logging', isFinal ? 12 : 4);
+    } else if (isTree) {
       this.sound.playWoodChop(isFinal);
       this.particles.spawnBurst(node.x, node.y + 1.35, node.z, 0xc8935a, isFinal ? 20 : 9, isFinal ? 5.2 : 3.6);
       this.particles.spawnBurst(node.x, node.y + 2.6, node.z, node.kind === 'birch_tree' ? 0xeab308 : 0x5ca848, isFinal ? 16 : 6, 3.8);
@@ -6552,24 +7706,56 @@ export class GameEngine {
       this.gainProficiencyExp('mining', isFinal ? 18 : 7);
     }
 
-    this.shakeIntensity = Math.max(this.shakeIntensity, isFinal ? 0.16 : 0.065);
+    this.shakeIntensity = Math.max(this.shakeIntensity, isFinal ? (isFoodNode ? 0.08 : 0.16) : 0.055);
     if (isFinal) {
-      this.hitstopTimer = 0.045;
+      this.hitstopTimer = isFoodNode ? 0.025 : 0.045;
       node.isDepleted = true;
       node.regrowTimer = node.regrowDuration;
-      node.fallProgress = 0.001;
+      node.fallProgress = isFoodNode ? 1.0 : 0.001;
       node.fallDirAngle = Math.atan2(node.z - this.playerZ, node.x - this.playerX);
+      if (isFoodNode) {
+        node.activeVisual.visible = false;
+      }
 
-      const toolBonus = isTree ? spec.woodBonus : spec.mineralBonus;
-      const profBonusChance = Math.min(1.0, profLvlDelta * 0.12);
-      const profBonus = profBonusChance > 0 && Math.random() < profBonusChance ? 1 : 0;
-      const totalAmt = node.yieldAmount + toolBonus + profBonus;
-      if (node.resourceYield) {
+      if (node.foodYield) {
+        const foodId = node.foodYield;
+        const specFood = FOOD_CATALOG.find((f) => f.id === foodId);
+        const totalAmt = node.yieldAmount + (Math.random() < 0.25 ? 1 : 0);
+        this.inventory[foodId] = (this.inventory[foodId] ?? 0) + totalAmt;
+        this.harvestedTotal += 1;
+        if ((this.inventory[this.selectedFood] ?? 0) <= 0) {
+          this.selectedFood = foodId;
+        }
+        this.spawnFeedback(
+          `+${totalAmt} ${specFood ? specFood.name : '음식'}`,
+          specFood ? specFood.colorHex : '#fde047',
+          node.x,
+          node.y + 1.7,
+          node.z,
+        );
+        this.sound.playCollectChime();
+        this.particles.spawnRing(node.x, node.y, node.z, 0x86efac, 1.8);
+        this.gainExp(8);
+        this.recordDailyProgress('daily_harvest_food', totalAmt);
+      } else if (node.resourceYield) {
+        const toolBonus = isTree ? spec.woodBonus : spec.mineralBonus;
+        const profBonusChance = Math.min(1.0, profLvlDelta * 0.12);
+        const profBonus = profBonusChance > 0 && Math.random() < profBonusChance ? 1 : 0;
+        const totalAmt = node.yieldAmount + toolBonus + profBonus;
         this.inventory[node.resourceYield] += totalAmt;
         this.harvestedTotal += 1;
-        if (node.resourceYield === 'wood') this.woodGathered += totalAmt;
-        else if (node.resourceYield === 'stone') this.stoneGathered += totalAmt;
-        else if (node.resourceYield === 'iron') this.ironGathered += totalAmt;
+        if (node.resourceYield === 'wood') {
+          this.woodGathered += totalAmt;
+          this.recordDailyProgress('daily_gather_wood', totalAmt);
+        } else if (node.resourceYield === 'stone') {
+          this.stoneGathered += totalAmt;
+          this.recordDailyProgress('daily_mine_ore', totalAmt);
+        } else if (node.resourceYield === 'iron') {
+          this.ironGathered += totalAmt;
+          this.recordDailyProgress('daily_mine_ore', totalAmt);
+        } else if (node.resourceYield === 'crystal') {
+          this.recordDailyProgress('daily_mine_ore', totalAmt);
+        }
 
         const nameMap = {
           wood: { label: '원목', color: '#f3c37a' },
@@ -6680,9 +7866,28 @@ export class GameEngine {
     if (this.disposed || !this.running || !this.renderer) return;
 
     const now = performance.now();
+    // Optional FPS limiter for battery & thermal optimization
+    if (!this.isSoftwareGl && this.settings.fpsLimit > 0) {
+      const minFrameMs = 1000 / this.settings.fpsLimit - 1.2;
+      if (this.lastRenderTimeMs > 0 && now - this.lastRenderTimeMs < minFrameMs) {
+        this.scheduleNextFrame();
+        return;
+      }
+    }
+    this.lastRenderTimeMs = now;
+
     const rawDt = (now - this.lastTimeMs) / 1000;
     this.lastTimeMs = now;
     const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
+
+    this.frameCounter++;
+    this.fpsAccumTime += rawDt;
+    this.fpsAccumFrames++;
+    if (this.fpsAccumTime >= 0.5) {
+      this.currentFps = Math.round(this.fpsAccumFrames / this.fpsAccumTime);
+      this.fpsAccumTime = 0;
+      this.fpsAccumFrames = 0;
+    }
 
     if (this.hitstopTimer > 0) {
       this.hitstopTimer = Math.max(0, this.hitstopTimer - dt);
@@ -6700,13 +7905,66 @@ export class GameEngine {
       this.updateCamera(dt);
     }
 
-    this.environment.update(dt, this.elapsedTime, this.playerX, this.playerY, this.playerZ);
+    const focusX =
+      this.phase === 'title' && this.titleCameraMode === 'scenic' && this.waterfallRig
+        ? this.waterfallRig.focalX
+        : this.playerX;
+    const focusY =
+      this.phase === 'title' && this.titleCameraMode === 'scenic' && this.waterfallRig
+        ? this.waterfallRig.focalY - 3.5
+        : this.playerY;
+    const focusZ =
+      this.phase === 'title' && this.titleCameraMode === 'scenic' && this.waterfallRig
+        ? this.waterfallRig.focalZ
+        : this.playerZ;
+
+    this.environment.update(dt, this.elapsedTime, focusX, focusY, focusZ);
+    // Sync live sun direction, sun color, sky reflection & fog into water & waterfall shaders (zero GC)
+    this.environment.getSunDirection(_waterSunDir);
+    this.environment.getSunColor(_waterSunColor);
+    this.environment.getSkyHorizonColor(_waterSkyHorizon);
+    this.environment.getSkyZenithColor(_waterSkyZenith);
+    _waterFogColor.copy(this.fog.color);
+    _waterEnvPayload.elapsed = this.elapsedTime;
+    _waterEnvPayload.fogDensity = this.environment.getFogDensity();
+    _waterEnvPayload.nightFactor = this.environment.nightFactor;
+
+    if (this.waterBundle) {
+      this.waterBundle.update(_waterEnvPayload);
+    }
+    if (this.waterfallRig) {
+      const reducedVfx =
+        this.settings.particlesLevel === 'off' || this.settings.particlesLevel === 'low';
+      this.waterfallRig.update(dt, this.elapsedTime, reducedVfx, _waterEnvPayload);
+    }
     if (this.phase === 'playing' && this.environment.isNightCreaturesActive()) {
       this.observedNightWildlife = true;
     }
     this.sound.updateBgm(this.environment.nightFactor, this.phase === 'playing');
+    const wfDist = this.waterfallRig
+      ? Math.hypot(
+          this.camera.position.x - this.waterfallRig.focalX,
+          this.camera.position.y - this.waterfallRig.focalY,
+          this.camera.position.z - this.waterfallRig.focalZ,
+        )
+      : 999;
+    this.sound.updateNatureAmbience({
+      dt,
+      elapsed: this.elapsedTime,
+      waterfallDist: this.inTrialDungeon ? 999 : wfDist,
+      windStrength: this.environment.windStrength,
+      nightFactor: this.environment.nightFactor,
+      rainBlend: this.environment.isRaining()
+        ? this.environment.weather === 'storm'
+          ? 1.0
+          : 0.65
+        : 0,
+      active: !this.inTrialDungeon && this.phase !== 'paused',
+    });
     this.updateWorldEntities(dt);
-    this.updateMonsters(dt);
+    if (this.phase !== 'title' || this.frameCounter % 4 === 0) {
+      this.updateMonsters(dt);
+    }
     this.updateRemotePlayers(dt);
     this.particles.update(dt);
     if (this.phase === 'playing') {
@@ -6718,11 +7976,12 @@ export class GameEngine {
       }
       if (this.mpClient && this.mpConnected) {
         this.mpSendTimer += dt;
-        if (this.mpSendTimer >= 0.065) {
+        if (this.mpSendTimer >= 0.08) {
           this.mpSendTimer = 0;
           const horizSpd = Math.hypot(this.velX, this.velZ);
           this.mpClient.sendPlayerState({
             playerClass: this.playerClass,
+            gameMode: this.gameMode,
             x: this.playerX,
             y: this.playerY,
             z: this.playerZ,
@@ -6743,7 +8002,8 @@ export class GameEngine {
     this.renderer.render(this.scene, this.camera);
 
     this.hudEmitTimer += dt;
-    if (this.hudEmitTimer >= 0.065) {
+    const hudInterval = this.phase === 'title' ? 0.35 : 0.11;
+    if (this.hudEmitTimer >= hudInterval) {
       this.hudEmitTimer = 0;
       this.emitHudSnapshot();
     }
@@ -6752,14 +8012,55 @@ export class GameEngine {
   }
 
   private updateTitleScene(dt: number): void {
+    if (this.catRig) {
+      this.catRig.root.visible = true;
+    }
+    if (this.titleCameraMode === 'scenic' && this.waterfallRig) {
+      // Cinematic sweeping lakefront orbit framing the glittering sunlit lake, wooden arch bridge,
+      // cascading waterfall + rainbow mist, glowing morning sun, and soaring sky bird flocks
+      this.titleOrbitAngle += dt * 0.13;
+      const fx = this.waterfallRig.focalX - 4.2;
+      const fz = this.waterfallRig.focalZ + 4.4;
+      const fy = this.waterfallRig.focalY - 0.5;
+      // Orbit smoothly across the southwest/west lake edge looking east-northeast toward waterfall & sunlit sky
+      const sweep = -1.28 + Math.sin(this.titleOrbitAngle) * 0.68;
+      const radius = 21.5 + Math.cos(this.titleOrbitAngle * 0.65) * 3.4;
+      const tx = fx + Math.sin(sweep) * radius;
+      const tz = fz + Math.cos(sweep) * radius;
+      const groundAtCam = getTerrainHeight(tx, tz);
+      const ty = Math.max(groundAtCam + 3.4, fy + 2.6 + Math.sin(this.titleOrbitAngle * 1.1) * 1.25);
+
+      const k = 1 - Math.exp(-3.2 * dt);
+      _camDesired.set(tx, ty, tz);
+      if (this.camera.position.distanceToSquared(_camDesired) > 2500) {
+        this.camera.position.copy(_camDesired);
+      } else {
+        this.camera.position.lerp(_camDesired, k);
+      }
+      _camLookAt.set(
+        this.waterfallRig.focalX + Math.sin(this.titleOrbitAngle * 0.45) * 2.4,
+        this.waterfallRig.focalY + 0.35 + Math.cos(this.titleOrbitAngle * 0.6) * 0.45,
+        this.waterfallRig.focalZ + Math.cos(this.titleOrbitAngle * 0.45) * 1.8,
+      );
+      this.camera.lookAt(_camLookAt);
+      return;
+    }
+
+    // Character Select closeup showcase camera
     this.titleOrbitAngle += dt * 0.24;
     const r = 4.35;
     const tx = this.playerX + Math.sin(this.titleOrbitAngle) * r;
     const tz = this.playerZ + Math.cos(this.titleOrbitAngle) * r;
     const ty = this.playerY + 1.92 + Math.sin(this.elapsedTime * 0.65) * 0.12;
 
-    this.camera.position.set(tx, ty, tz);
-    this.camera.lookAt(this.playerX - 1.15, this.playerY + 0.98, this.playerZ);
+    const k = 1 - Math.exp(-5.0 * dt);
+    _camDesired.set(tx, ty, tz);
+    if (this.camera.position.distanceToSquared(_camDesired) > 200) {
+      this.camera.position.copy(_camDesired);
+    } else {
+      this.camera.position.lerp(_camDesired, k);
+    }
+    this.camera.lookAt(this.playerX - 0.85, this.playerY + 0.98, this.playerZ);
 
     this.catRig.updateAnimation({
       dt,
@@ -6834,22 +8135,60 @@ export class GameEngine {
       }
     }
 
+    const isCreative = this.gameMode === 'creative';
     const wantsSprint =
       (this.heldKeys.has('ShiftLeft') || this.heldKeys.has('ShiftRight') || this.mobileSprint) &&
       hasMoveInput;
-    if (this.staminaExhausted && this.stamina > 22) {
+    if (isCreative) {
+      this.staminaExhausted = false;
+      this.stamina = this.maxStamina;
+      this.hp = this.maxHp;
+      this.hunger = this.maxHunger;
+      this.breath = this.maxBreath;
+      this.starvationTickTimer = 0;
+    } else if (this.staminaExhausted && this.stamina > 22) {
       this.staminaExhausted = false;
     }
-    const isSprinting = wantsSprint && !this.staminaExhausted && this.stamina > 0.5;
+    const isSprinting = isCreative
+      ? wantsSprint
+      : wantsSprint && !this.staminaExhausted && this.stamina > 0.5;
     const staminaDrain = Math.max(11, 21 - (this.upgrades.bootsLevel - 1) * 4);
     const craftRegenBonus = Math.max(0, this.proficiencies.craft.level - 1) * 1.6;
-    const staminaRegen = 22 + (this.upgrades.bootsLevel - 1) * 6 + craftRegenBonus;
+    const hungerStaminaMult = this.hunger <= 15 ? 0.52 : this.hunger >= 75 ? 1.18 : 1.0;
+    const staminaRegen = (22 + (this.upgrades.bootsLevel - 1) * 6 + craftRegenBonus) * hungerStaminaMult;
 
-    if (isSprinting) {
-      this.stamina = Math.max(0, this.stamina - staminaDrain * dt);
-      if (this.stamina <= 0.5) this.staminaExhausted = true;
-    } else {
-      this.stamina = Math.min(this.maxStamina, this.stamina + staminaRegen * dt);
+    if (!isCreative) {
+      if (isSprinting) {
+        this.stamina = Math.max(0, this.stamina - staminaDrain * dt);
+        if (this.stamina <= 0.5) this.staminaExhausted = true;
+      } else {
+        this.stamina = Math.min(this.maxStamina, this.stamina + staminaRegen * dt);
+      }
+
+      // Hunger survival loop: gradual drain while exploring, bonus heal when full, gentle warning when empty
+      const hungerDrainRate = isSprinting
+        ? 0.52
+        : this.isSwimming
+          ? 0.44
+          : hasMoveInput
+            ? 0.24
+            : 0.09;
+      this.hunger = Math.max(0, this.hunger - hungerDrainRate * dt);
+      if (this.hunger >= 75 && this.hp < this.maxHp && this.playerHurtCooldown <= 0) {
+        this.hp = Math.min(this.maxHp, this.hp + 1.8 * dt);
+      }
+      if (this.hunger <= 0.01) {
+        this.starvationTickTimer += dt;
+        if (this.starvationTickTimer >= 4.2) {
+          this.starvationTickTimer = 0;
+          if (this.hp > 10) {
+            this.hp = Math.max(10, this.hp - 2);
+            this.spawnFeedback('배고픔! 음식을 섭취하세요 (6키)', '#fb923c', this.playerX, this.playerY + 2.05, this.playerZ);
+          }
+        }
+      } else {
+        this.starvationTickTimer = 0;
+      }
     }
 
     const classMoveMult = getClassSpec(this.playerClass).moveSpeedMult;
@@ -6995,20 +8334,25 @@ export class GameEngine {
       this.playerY = THREE.MathUtils.damp(this.playerY, swimSurfaceY, 10, dt);
       this.velY = 0;
 
-      // Breath Gauge drain while swimming (faster when sprint-swimming)
-      const drainRate = isSprinting ? 12.5 : horizSpeed > 0.5 ? 7.2 : 3.2;
-      this.breath = Math.max(0, this.breath - drainRate * dt);
-      if (this.breath <= 0) {
-        this.breathDamageTimer += dt;
-        if (this.breathDamageTimer >= 1.15) {
-          this.breathDamageTimer = 0;
-          if (this.hp > 6) {
-            this.hp = Math.max(5, this.hp - 4);
-            this.spawnFeedback('숨 부족! -4 HP', '#38bdf8', this.playerX, this.playerY + 1.9, this.playerZ);
-          }
-        }
-      } else {
+      // Breath Gauge drain while swimming (infinite in Creative Mode)
+      if (isCreative) {
+        this.breath = this.maxBreath;
         this.breathDamageTimer = 0;
+      } else {
+        const drainRate = isSprinting ? 12.5 : horizSpeed > 0.5 ? 7.2 : 3.2;
+        this.breath = Math.max(0, this.breath - drainRate * dt);
+        if (this.breath <= 0) {
+          this.breathDamageTimer += dt;
+          if (this.breathDamageTimer >= 1.15) {
+            this.breathDamageTimer = 0;
+            if (this.hp > 6) {
+              this.hp = Math.max(5, this.hp - 4);
+              this.spawnFeedback('숨 부족! -4 HP', '#38bdf8', this.playerX, this.playerY + 1.9, this.playerZ);
+            }
+          }
+        } else {
+          this.breathDamageTimer = 0;
+        }
       }
 
       // Swimming splash rings & water droplets
@@ -7125,6 +8469,38 @@ export class GameEngine {
   }
 
   private updateCamera(dt: number): void {
+    if (this.catRig) {
+      this.catRig.root.visible = this.cameraMode !== 'first';
+    }
+
+    if (this.cameraMode === 'first') {
+      // 1인칭 시점: eye-level forward camera following cameraYaw & cameraPitch
+      const eyeY = this.playerY + (this.isSwimming ? 1.05 : 1.52);
+      _camDesired.set(
+        this.playerX - Math.sin(this.cameraYaw) * 0.14,
+        eyeY,
+        this.playerZ - Math.cos(this.cameraYaw) * 0.14,
+      );
+      const kFirst = 1 - Math.exp(-26 * dt);
+      this.camera.position.lerp(_camDesired, kFirst);
+
+      if (this.shakeIntensity > 0.001) {
+        this.camera.position.x += (Math.random() - 0.5) * this.shakeIntensity * 0.45;
+        this.camera.position.y += (Math.random() - 0.5) * this.shakeIntensity * 0.45;
+        this.shakeIntensity = Math.max(0, this.shakeIntensity - dt * 1.4);
+      }
+
+      const pitchClamped = THREE.MathUtils.clamp(this.cameraPitch, -1.12, 1.12);
+      const cosP = Math.cos(pitchClamped);
+      _camLookAt.set(
+        this.camera.position.x - Math.sin(this.cameraYaw) * cosP * 12,
+        this.camera.position.y - Math.sin(pitchClamped) * 12,
+        this.camera.position.z - Math.cos(this.cameraYaw) * cosP * 12,
+      );
+      this.camera.lookAt(_camLookAt);
+      return;
+    }
+
     this.cameraDist = THREE.MathUtils.damp(this.cameraDist, this.targetCameraDist, 10, dt);
 
     // Smoothly support looking UP at ceilings (negative cameraPitch) without ground-clipping or wall occlusion
@@ -7137,11 +8513,12 @@ export class GameEngine {
 
     const horizDist = Math.cos(this.cameraPitch) * effectiveDist;
     const vertDist = Math.sin(this.cameraPitch) * effectiveDist;
+    const frontSign = this.cameraMode === 'third_front' ? -1 : 1;
 
     _camDesired.set(
-      this.playerX + Math.sin(this.cameraYaw) * horizDist,
+      this.playerX + Math.sin(this.cameraYaw) * horizDist * frontSign,
       this.playerY + 1.35 + vertDist,
-      this.playerZ + Math.cos(this.cameraYaw) * horizDist,
+      this.playerZ + Math.cos(this.cameraYaw) * horizDist * frontSign,
     );
 
     const floorClearance = lookUpNorm > 0 ? 0.34 : 0.85;
@@ -7163,12 +8540,17 @@ export class GameEngine {
       this.shakeIntensity = Math.max(0, this.shakeIntensity - dt * 1.4);
     }
 
-    // When pitching upward, aim lookAt smoothly upward & slightly ahead to frame ceilings clearly
-    _camLookAt.set(
-      this.playerX - Math.sin(this.cameraYaw) * lookUp * 2.1,
-      this.playerY + 1.15 + lookUp * 4.2,
-      this.playerZ - Math.cos(this.cameraYaw) * lookUp * 2.1,
-    );
+    if (this.cameraMode === 'third_front') {
+      // 3인칭 전면 시점: look back directly at the character's face & upper body
+      _camLookAt.set(this.playerX, this.playerY + 1.18, this.playerZ);
+    } else {
+      // 3인칭 후면 시점: when pitching upward, aim lookAt smoothly upward & slightly ahead
+      _camLookAt.set(
+        this.playerX - Math.sin(this.cameraYaw) * lookUp * 2.1,
+        this.playerY + 1.15 + lookUp * 4.2,
+        this.playerZ - Math.cos(this.cameraYaw) * lookUp * 2.1,
+      );
+    }
     this.camera.lookAt(_camLookAt);
   }
 
@@ -7182,15 +8564,8 @@ export class GameEngine {
     }
     this.frontierRingMesh.position.y = 0.5 + Math.sin(this.elapsedTime * 1.8) * 0.08;
 
-    if (this.waterBundle) {
-      const wave = Math.sin(this.elapsedTime * 1.65) * 0.025;
-      this.waterBundle.lakeMesh.position.y = -0.32 + wave;
-      this.waterBundle.lakeFoam.position.y = -0.3 + wave;
-      this.waterBundle.lakeFoam.rotation.z = this.elapsedTime * 0.08;
-      this.waterBundle.coastMesh.position.y = -0.42 + Math.cos(this.elapsedTime * 1.25) * 0.035;
-      this.waterBundle.oasisMesh.position.y = -0.24 + wave * 0.85;
-      this.waterBundle.pondMesh.position.y = -0.22 - wave * 0.8;
-    }
+    // Water wave displacement, shoreline foam, and sun reflections are animated smoothly
+    // inside the depth-aware water shader via this.waterBundle.update(_waterEnvPayload).
     if (this.trialDungeonRig) {
       this.trialDungeonRig.sealRing.rotation.z = this.elapsedTime * 0.25;
       this.trialDungeonRig.portalRing.rotation.z = -this.elapsedTime * 0.85;
@@ -7248,20 +8623,53 @@ export class GameEngine {
 
     // Identify the primary closest gatherable tree/rock within proximity highlight range
     const isPlaying = this.phase === 'playing';
+    const refX =
+      this.phase === 'title' && this.titleCameraMode === 'scenic' && this.waterfallRig
+        ? this.waterfallRig.focalX
+        : this.playerX;
+    const refZ =
+      this.phase === 'title' && this.titleCameraMode === 'scenic' && this.waterfallRig
+        ? this.waterfallRig.focalZ
+        : this.playerZ;
+    const cullDistSq = this.cullDistance * this.cullDistance;
+    const swayDistSq = 46 * 46;
+    const doCullPass = this.frameCounter % 3 === 0;
+
     let primaryOutlineNode: WorldResourceNode | null = null;
     let primaryOutlineDist = Infinity;
     if (isPlaying) {
       for (const n of this.resources) {
-        if (n.isDepleted) continue;
-        const d = Math.hypot(n.x - this.playerX, n.z - this.playerZ);
-        if (d <= n.interactRadius + 2.8 && d < primaryOutlineDist) {
-          primaryOutlineDist = d;
-          primaryOutlineNode = n;
+        if (n.isDepleted || !n.group.visible) continue;
+        const dx = n.x - this.playerX;
+        const dz = n.z - this.playerZ;
+        const dSq = dx * dx + dz * dz;
+        const maxR = n.interactRadius + 2.8;
+        if (dSq <= maxR * maxR) {
+          const d = Math.sqrt(dSq);
+          if (d < primaryOutlineDist) {
+            primaryOutlineDist = d;
+            primaryOutlineNode = n;
+          }
         }
       }
     }
 
     for (const n of this.resources) {
+      const dxR = n.x - refX;
+      const dzR = n.z - refZ;
+      const distSq = dxR * dxR + dzR * dzR;
+
+      if (doCullPass && !n.suppressedByHousing) {
+        const shouldShow = distSq <= cullDistSq;
+        if (n.group.visible !== shouldShow) {
+          n.group.visible = shouldShow;
+        }
+      }
+
+      if (!n.group.visible && !n.isDepleted) {
+        continue;
+      }
+
       const isTree = n.kind === 'oak_tree' || n.kind === 'pine_tree' || n.kind === 'birch_tree';
 
       if (n.shakeTimer > 0) {
@@ -7270,19 +8678,16 @@ export class GameEngine {
         n.activeVisual.rotation.z = s;
         n.activeVisual.rotation.x = s * 0.6;
       } else if (!n.isDepleted) {
-        if (isTree) {
+        if (isTree && distSq <= swayDistSq && this.settings.weatherEffects) {
           n.activeVisual.rotation.z = Math.sin(this.elapsedTime * 1.9 + n.x * 0.3) * windSwayAmp;
           n.activeVisual.rotation.x = Math.cos(this.elapsedTime * 1.5 + n.z * 0.3) * windSwayAmp * 0.6;
-        } else {
-          n.activeVisual.rotation.z = 0;
-          n.activeVisual.rotation.x = 0;
         }
       }
 
       // Subtle proximity outline highlight for gatherable trees & rocks
       let targetOutline = 0;
       const isPrimary = n === primaryOutlineNode;
-      if (isPlaying && !n.isDepleted) {
+      if (isPlaying && !n.isDepleted && distSq <= 81) {
         const highlightMax = n.interactRadius + 2.8;
         const d = Math.hypot(n.x - this.playerX, n.z - this.playerZ);
         if (d <= highlightMax) {
@@ -7294,7 +8699,9 @@ export class GameEngine {
           targetOutline = isPrimary ? Math.max(0.8, proximity) : proximity * 0.42;
         }
       }
-      n.outlineStrength = THREE.MathUtils.damp(n.outlineStrength, targetOutline, 10, dt);
+      if (n.outlineStrength > 0.005 || targetOutline > 0) {
+        n.outlineStrength = THREE.MathUtils.damp(n.outlineStrength, targetOutline, 10, dt);
+      }
 
       if (n.outlineGroup && n.outlineMaterial) {
         if (n.outlineStrength > 0.015 && !n.isDepleted && n.activeVisual.visible) {
@@ -7681,11 +9088,31 @@ export class GameEngine {
       }
     }
 
-    for (const m of this.monsters) {
+    const monsterCullDist = Math.max(68, this.cullDistance * 0.88);
+    const monsterCullSq = monsterCullDist * monsterCullDist;
+    const monsterSleepSq = (this.settings.distanceLod ? 48 : 88) ** 2;
+
+    for (let mi = 0; mi < this.monsters.length; mi++) {
+      const m = this.monsters[mi];
       // Night-only undead remain dormant & hidden during daytime
       if (m.isNightOnly && !isNightNow) {
         if (m.group.visible) m.group.visible = false;
         continue;
+      }
+
+      // Distance Culling & LOD for distant non-boss monsters (massive CPU/GPU savings!)
+      if (!m.isDead && !m.isTrialBoss) {
+        const mdx = m.x - this.playerX;
+        const mdz = m.z - this.playerZ;
+        const mDistSq = mdx * mdx + mdz * mdz;
+        const withinView = mDistSq <= monsterCullSq;
+        if (m.group.visible !== withinView) {
+          m.group.visible = withinView;
+        }
+        if (!withinView) continue;
+        if (this.settings.distanceLod && mDistSq > monsterSleepSq && m.aggroTimer <= 0) {
+          if ((this.frameCounter + mi) % 6 !== 0) continue;
+        }
       }
 
       if (m.isDead) {
@@ -7785,9 +9212,17 @@ export class GameEngine {
       const distToPlayer = Math.hypot(this.playerX - m.x, this.playerZ - m.z);
       const distToHome = Math.hypot(m.x - m.homeX, m.z - m.homeZ);
 
-      // Aggressive Auto-Aggro (Nocturnal Undead, Bosses, Frost Wolves)
+      // Aggressive Auto-Aggro (Disabled completely in Creative Mode so monsters never attack!)
+      const isCreativeMode = this.gameMode === 'creative';
+      if (isCreativeMode) {
+        m.aggroTimer = 0;
+        m.telegraphTimer = 0;
+        m.telegraphLabel = null;
+        if (m.telegraphGroup) m.telegraphGroup.visible = false;
+      }
       const autoAggroRange = m.isNightOnly ? 18.0 : m.isBoss ? 11.5 : m.isAggressive ? 10.0 : 0;
       if (
+        !isCreativeMode &&
         isPlaying &&
         autoAggroRange > 0 &&
         distToPlayer < autoAggroRange &&
@@ -7896,7 +9331,7 @@ export class GameEngine {
           ? this.placedHouses.find((h) => h.id === m.siegeTargetId && h.group.visible) || null
           : null;
 
-        if (isPlaying && this.placedHouses.length > 0) {
+        if (isPlaying && !isCreativeMode && this.placedHouses.length > 0) {
           const houseDetectRadius = m.isNightOnly
             ? 17.5
             : m.isBoss || m.aggroTimer > 0
@@ -8586,13 +10021,15 @@ export class GameEngine {
         continue;
       }
       const mk: MinimapEntity['kind'] =
-        r.kind === 'oak_tree' || r.kind === 'pine_tree' || r.kind === 'birch_tree'
-          ? 'tree'
-          : r.kind === 'iron_vein'
-            ? 'iron'
-            : r.kind === 'crystal_cluster'
-              ? 'crystal'
-              : 'rock';
+        r.foodYield
+          ? 'sapling'
+          : r.kind === 'oak_tree' || r.kind === 'pine_tree' || r.kind === 'birch_tree'
+            ? 'tree'
+            : r.kind === 'iron_vein'
+              ? 'iron'
+              : r.kind === 'crystal_cluster'
+                ? 'crystal'
+                : 'rock';
       minimapEntities.push({
         id: r.id,
         x: r.x,
@@ -8691,6 +10128,9 @@ export class GameEngine {
 
     this.callbacks.onHudUpdate({
       phase: this.phase,
+      gameMode: this.gameMode,
+      worldId: this.currentWorldId,
+      worldName: this.currentWorldName,
       playerClass: this.playerClass,
       worldTier: this.worldTier,
       zoneName: `${regionInfo.name} · ${regionInfo.cardinalLabel}`,
@@ -8703,6 +10143,11 @@ export class GameEngine {
       maxHp: this.maxHp,
       stamina: Math.round(this.stamina),
       maxStamina: this.maxStamina,
+      hunger: Math.round(this.hunger),
+      maxHunger: this.maxHunger,
+      selectedFood: this.selectedFood,
+      cameraMode: this.cameraMode,
+      isFullscreen: this.isFullscreen,
       isSwimming: this.isSwimming,
       breath: Math.round(this.breath),
       maxBreath: this.maxBreath,
@@ -8720,6 +10165,7 @@ export class GameEngine {
       autoEquipTool: this.autoEquipTool,
       hotbarSlots: [...this.hotbarSlots],
       quests: this.buildQuestsSnapshot(),
+      dailyQuests: this.buildDailyQuestsSnapshot(),
       activeEmote: this.activeEmote,
       nearbyHint,
       gatherProgress: this.activeGatherNode ? 1 - this.activeGatherNode.hp / this.activeGatherNode.maxHp : 0,
@@ -8813,6 +10259,7 @@ export class GameEngine {
         transport: this.mpTransport,
         serverHost: this.mpServerHost,
         roomId: this.mpRoomId,
+        roomGameMode: this.mpRoomGameMode,
         playerId: this.mpPlayerId,
         playerName: this.mpPlayerName || '모험가',
         onlineCount: 1 + this.remotePlayers.size,
@@ -8842,6 +10289,7 @@ export class GameEngine {
       lastSavedAt: this.lastSavedAt,
       hasSavedGame: !!this.saveSummary,
       saveSummary: this.saveSummary,
+      fps: this.currentFps,
     });
   }
 
@@ -8861,6 +10309,7 @@ export class GameEngine {
     window.removeEventListener('keyup', this.handleKeyUp);
     window.removeEventListener('blur', this.handleBlur);
     window.removeEventListener('resize', this.handleResize);
+    document.removeEventListener('fullscreenchange', this.handleFullscreenChange);
     window.removeEventListener('pointermove', this.handlePointerMove);
     window.removeEventListener('pointerup', this.handlePointerUp);
     window.removeEventListener('pointercancel', this.handlePointerUp);

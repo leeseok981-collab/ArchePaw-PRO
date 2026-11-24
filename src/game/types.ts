@@ -1,6 +1,157 @@
 export type GamePhase = 'title' | 'playing' | 'paused';
 
+export type GameMode = 'survival' | 'creative';
+
 export type ResourceKind = 'wood' | 'stone' | 'iron' | 'crystal';
+
+export type CameraPerspectiveMode = 'third_back' | 'first' | 'third_front';
+
+export type MaterialItemId = 'wood' | 'stone' | 'iron' | 'crystal' | 'leather' | 'fang' | 'essence';
+
+export interface MaterialItemSpec {
+  id: MaterialItemId;
+  name: string;
+  shortLabel: string;
+  accentHex: string;
+  hint: string;
+}
+
+export const MATERIAL_ITEMS_CATALOG: MaterialItemSpec[] = [
+  { id: 'wood', name: '원목', shortLabel: '원목', accentHex: '#d9a870', hint: '벌목·건축 기본 목재' },
+  { id: 'stone', name: '석재', shortLabel: '석재', accentHex: '#cbd5e1', hint: '채광·건축 기본 석재' },
+  { id: 'iron', name: '철광석', shortLabel: '철광석', accentHex: '#93c5fd', hint: '강철 도구·장비 제련 광석' },
+  { id: 'crystal', name: '마력 수정', shortLabel: '수정', accentHex: '#67e8f9', hint: '전설 장비·월드 확장 수정' },
+  { id: 'leather', name: '몬스터 가죽', shortLabel: '가죽', accentHex: '#fdba74', hint: '방어구 제작 야수 가죽' },
+  { id: 'fang', name: '야수 송곳니', shortLabel: '송곳니', accentHex: '#fef08a', hint: '사냥 무기 제작 송곳니' },
+  { id: 'essence', name: '마력 정수', shortLabel: '정수', accentHex: '#6ee7b7', hint: '정령·보스 마력 정수' },
+];
+
+export interface WorldRecord {
+  id: string;
+  name: string;
+  gameMode: GameMode;
+  isMultiplayer: boolean;
+  roomCode: string;
+  playerClass: PlayerClassId;
+  worldTier: number;
+  level: number;
+  housingCount: number;
+  createdAt: number;
+  lastPlayedAt: number;
+}
+
+export type FoodId =
+  | 'apple'
+  | 'berry'
+  | 'mushroom'
+  | 'honey'
+  | 'coconut'
+  | 'cactus_fruit'
+  | 'carrot'
+  | 'meat';
+
+export interface FoodSpec {
+  id: FoodId;
+  name: string;
+  shortLabel: string;
+  sourceLabel: string;
+  hungerRestore: number;
+  hpRestore: number;
+  staminaRestore: number;
+  colorHex: string;
+  description: string;
+}
+
+export const FOOD_CATALOG: FoodSpec[] = [
+  {
+    id: 'apple',
+    name: '싱싱한 사과',
+    shortLabel: '사과',
+    sourceLabel: '사과 나무 채집',
+    hungerRestore: 22,
+    hpRestore: 10,
+    staminaRestore: 10,
+    colorHex: '#f87171',
+    description: '마을과 초원 사과 나무에서 따는 아삭한 붉은 사과입니다.',
+  },
+  {
+    id: 'berry',
+    name: '야생 산딸기',
+    shortLabel: '산딸기',
+    sourceLabel: '베리 덤불 채집',
+    hungerRestore: 14,
+    hpRestore: 6,
+    staminaRestore: 16,
+    colorHex: '#f43f5e',
+    description: '베리 덤불에서 빠르게 채집해 기력을 회복하는 새콤달콤한 열매입니다.',
+  },
+  {
+    id: 'mushroom',
+    name: '숲 황금버섯',
+    shortLabel: '버섯',
+    sourceLabel: '숲 버섯 군락 채집',
+    hungerRestore: 18,
+    hpRestore: 12,
+    staminaRestore: 8,
+    colorHex: '#fb923c',
+    description: '그늘진 숲과 폭포 주변 버섯 군락에서 자라는 향긋한 식용 버섯입니다.',
+  },
+  {
+    id: 'honey',
+    name: '야생 벌꿀',
+    shortLabel: '벌꿀',
+    sourceLabel: '야생 벌집 채집',
+    hungerRestore: 28,
+    hpRestore: 18,
+    staminaRestore: 24,
+    colorHex: '#facc15',
+    description: '초원 벌집에서 채취한 진한 황금빛 야생 꿀입니다.',
+  },
+  {
+    id: 'coconut',
+    name: '해변 코코넛',
+    shortLabel: '코코넛',
+    sourceLabel: '해변 야자수 채집',
+    hungerRestore: 24,
+    hpRestore: 12,
+    staminaRestore: 20,
+    colorHex: '#a3e635',
+    description: '동부 해안과 오아시스 야자수에서 얻는 시원한 열대 열매입니다.',
+  },
+  {
+    id: 'cactus_fruit',
+    name: '선인장 열매',
+    shortLabel: '선인장',
+    sourceLabel: '사막 선인장 채집',
+    hungerRestore: 20,
+    hpRestore: 10,
+    staminaRestore: 22,
+    colorHex: '#e879f9',
+    description: '북부 사막 선인장 꼭대기에서 열리는 수분 가득한 붉은 열매입니다.',
+  },
+  {
+    id: 'carrot',
+    name: '야생 당근',
+    shortLabel: '당근',
+    sourceLabel: '초원 당근 밭 채집',
+    hungerRestore: 18,
+    hpRestore: 8,
+    staminaRestore: 18,
+    colorHex: '#f97316',
+    description: '초원과 서쪽 바람계곡 흙밭에서 뽑는 아삭한 야생 당근입니다.',
+  },
+  {
+    id: 'meat',
+    name: '구운 고기',
+    shortLabel: '고기',
+    sourceLabel: '몬스터 사냥 획득',
+    hungerRestore: 38,
+    hpRestore: 26,
+    staminaRestore: 16,
+    colorHex: '#fbbf24',
+    description: '야생 몬스터 사냥으로 얻는 든든한 고기 요리입니다.',
+  },
+];
 
 export type WeatherKind = 'clear' | 'rain' | 'storm' | 'fog' | 'snow';
 
@@ -244,6 +395,27 @@ export interface Inventory {
   fang: number;
   essence: number;
   potion: number;
+  apple: number;
+  berry: number;
+  mushroom: number;
+  honey: number;
+  coconut: number;
+  cactus_fruit: number;
+  carrot: number;
+  meat: number;
+}
+
+export function getTotalFoodCount(inv: Inventory): number {
+  return (
+    (inv.apple || 0) +
+    (inv.berry || 0) +
+    (inv.mushroom || 0) +
+    (inv.honey || 0) +
+    (inv.coconut || 0) +
+    (inv.cactus_fruit || 0) +
+    (inv.carrot || 0) +
+    (inv.meat || 0)
+  );
 }
 
 export interface ArmorSpec {
@@ -1310,6 +1482,13 @@ export type NodeKind =
   | 'granite_rock'
   | 'iron_vein'
   | 'crystal_cluster'
+  | 'apple_tree'
+  | 'berry_bush'
+  | 'mushroom_patch'
+  | 'wild_beehive'
+  | 'coconut_palm'
+  | 'cactus_pear'
+  | 'carrot_patch'
   | 'workbench'
   | 'frontier_stone'
   | 'signpost'
@@ -1379,6 +1558,59 @@ export type MonsterSpecies =
   | 'alpha_frost_boss'
   | 'rune_golem_boss'
   | 'coastal_titan_boss';
+
+export type SpawnEggId =
+  | MonsterSpecies
+  | 'water_spirit_king'
+  | 'wind_spirit_king'
+  | 'fire_spirit_king'
+  | 'earth_spirit_king';
+
+export interface SpawnEggSpec {
+  id: SpawnEggId;
+  species: MonsterSpecies;
+  spiritRank?: SpiritRank;
+  name: string;
+  shortLabel: string;
+  category: 'normal' | 'spirit' | 'boss';
+  accentHex: string;
+  secondaryHex: string;
+  description: string;
+}
+
+export const SPAWN_EGGS_CATALOG: SpawnEggSpec[] = [
+  // Regular & Elemental Wildlife Monsters
+  { id: 'meadow_boar', species: 'meadow_boar', name: '초원 멧돼지 생성알', shortLabel: '멧돼지알', category: 'normal', accentHex: '#b45309', secondaryHex: '#fcd34d', description: '초원을 누비는 야생 멧돼지를 소환합니다.' },
+  { id: 'forest_slime', species: 'forest_slime', name: '숲 슬라임 생성알', shortLabel: '숲슬라임알', category: 'normal', accentHex: '#22c55e', secondaryHex: '#bbf7d0', description: '통통 튀는 초원 숲 슬라임을 소환합니다.' },
+  { id: 'water_slime', species: 'water_slime', name: '물 슬라임 생성알', shortLabel: '물슬라임알', category: 'normal', accentHex: '#0ea5e9', secondaryHex: '#bae6fd', description: '맑은 수분으로 이루어진 물 슬라임을 소환합니다.' },
+  { id: 'fire_slime', species: 'fire_slime', name: '불 슬라임 생성알', shortLabel: '불슬라임알', category: 'normal', accentHex: '#ef4444', secondaryHex: '#fde047', description: '뜨거운 불꽃을 품은 불 슬라임을 소환합니다.' },
+  { id: 'wind_slime', species: 'wind_slime', name: '바람 슬라임 생성알', shortLabel: '바람슬라임', category: 'normal', accentHex: '#10b981', secondaryHex: '#a7f3d0', description: '민첩한 질풍의 바람 슬라임을 소환합니다.' },
+  { id: 'earth_slime', species: 'earth_slime', name: '대지 슬라임 생성알', shortLabel: '대지슬라임', category: 'normal', accentHex: '#d97706', secondaryHex: '#fde68a', description: '단단한 암석 결정 대지 슬라임을 소환합니다.' },
+  { id: 'ember_wolf', species: 'ember_wolf', name: '화염 늑대 생성알', shortLabel: '화염늑대알', category: 'normal', accentHex: '#f97316', secondaryHex: '#fecaca', description: '화산 지대의 사나운 화염 늑대를 소환합니다.' },
+  { id: 'frost_wolf', species: 'frost_wolf', name: '서리 늑대 생성알', shortLabel: '서리늑대알', category: 'normal', accentHex: '#38bdf8', secondaryHex: '#e0f2fe', description: '차가운 서리 송곳니를 지닌 서리 늑대를 소환합니다.' },
+  { id: 'night_skeleton', species: 'night_skeleton', name: '해골 기사 생성알', shortLabel: '해골기사알', category: 'normal', accentHex: '#94a3b8', secondaryHex: '#f8fafc', description: '야간 언데드 해골 기사를 즉시 소환합니다.' },
+  { id: 'night_wraith', species: 'night_wraith', name: '심연 망령 생성알', shortLabel: '심연망령알', category: 'normal', accentHex: '#a855f7', secondaryHex: '#e9d5ff', description: '푸른 영혼 불꽃을 두른 심연 망령을 소환합니다.' },
+
+  // 4 Elemental Spirits & Spirit Kings
+  { id: 'water_spirit', species: 'water_spirit', spiritRank: 'mid', name: '물 정령 생성알', shortLabel: '물정령알', category: 'spirit', accentHex: '#38bdf8', secondaryHex: '#cffafe', description: '동부 바다의 중급 물 정령을 소환합니다.' },
+  { id: 'wind_spirit', species: 'wind_spirit', spiritRank: 'mid', name: '바람 정령 생성알', shortLabel: '바람정령알', category: 'spirit', accentHex: '#34d399', secondaryHex: '#d1fae5', description: '서부 바람 계곡의 중급 바람 정령을 소환합니다.' },
+  { id: 'fire_spirit', species: 'fire_spirit', spiritRank: 'mid', name: '불 정령 생성알', shortLabel: '불정령알', category: 'spirit', accentHex: '#fb7185', secondaryHex: '#fecdd3', description: '남부 화산의 중급 불 정령을 소환합니다.' },
+  { id: 'earth_spirit', species: 'earth_spirit', spiritRank: 'mid', name: '대지 정령 생성알', shortLabel: '대지정령알', category: 'spirit', accentHex: '#fbbf24', secondaryHex: '#fef3c7', description: '북부 사막의 중급 대지 정령을 소환합니다.' },
+  { id: 'water_spirit_king', species: 'water_spirit', spiritRank: 'king', name: '물의 정령왕 생성알', shortLabel: '물정령왕알', category: 'boss', accentHex: '#0284c7', secondaryHex: '#fde047', description: '동해의 지배자 물의 정령왕을 소환합니다.' },
+  { id: 'wind_spirit_king', species: 'wind_spirit', spiritRank: 'king', name: '바람의 정령왕 생성알', shortLabel: '바람왕알', category: 'boss', accentHex: '#059669', secondaryHex: '#fde047', description: '대폭풍 계곡의 바람의 정령왕을 소환합니다.' },
+  { id: 'fire_spirit_king', species: 'fire_spirit', spiritRank: 'king', name: '불의 정령왕 생성알', shortLabel: '불정령왕알', category: 'boss', accentHex: '#dc2626', secondaryHex: '#fde047', description: '대용암 칼데라의 불의 정령왕을 소환합니다.' },
+  { id: 'earth_spirit_king', species: 'earth_spirit', spiritRank: 'king', name: '대지의 정령왕 생성알', shortLabel: '대지왕알', category: 'boss', accentHex: '#d97706', secondaryHex: '#fde047', description: '황금 대사막의 대지의 정령왕을 소환합니다.' },
+
+  // 4 Guardian & Regional Bosses
+  { id: 'azure_dragon_boss', species: 'azure_dragon_boss', name: '동방 청룡 생성알', shortLabel: '청룡알', category: 'boss', accentHex: '#06b6d4', secondaryHex: '#fef08a', description: '동방 수호신 청룡 보스를 소환합니다.' },
+  { id: 'white_tiger_boss', species: 'white_tiger_boss', name: '서방 백호 생성알', shortLabel: '백호알', category: 'boss', accentHex: '#e2e8f0', secondaryHex: '#38bdf8', description: '서방 수호신 백호 보스를 소환합니다.' },
+  { id: 'vermilion_phoenix_boss', species: 'vermilion_phoenix_boss', name: '남방 주작 생성알', shortLabel: '주작알', category: 'boss', accentHex: '#f43f5e', secondaryHex: '#fbbf24', description: '남방 수호신 주작 보스를 소환합니다.' },
+  { id: 'black_tortoise_boss', species: 'black_tortoise_boss', name: '북방 현무 생성알', shortLabel: '현무알', category: 'boss', accentHex: '#64748b', secondaryHex: '#34d399', description: '북방 수호신 현무 보스를 소환합니다.' },
+  { id: 'elder_tusk_boss', species: 'elder_tusk_boss', name: '대지 멧돼지 보스 생성알', shortLabel: '거대돼지알', category: 'boss', accentHex: '#92400e', secondaryHex: '#f59e0b', description: '거대한 엄니를 지닌 대지 멧돼지 보스를 소환합니다.' },
+  { id: 'alpha_frost_boss', species: 'alpha_frost_boss', name: '알파 서리늑대 생성알', shortLabel: '알파늑대알', category: 'boss', accentHex: '#2563eb', secondaryHex: '#bae6fd', description: '혹한의 군주 알파 서리늑대 보스를 소환합니다.' },
+  { id: 'rune_golem_boss', species: 'rune_golem_boss', name: '룬 거신 생성알', shortLabel: '룬거신알', category: 'boss', accentHex: '#0ea5e9', secondaryHex: '#facc15', description: '고대 룬 석상 거신 보스를 소환합니다.' },
+  { id: 'coastal_titan_boss', species: 'coastal_titan_boss', name: '해안 타이탄 생성알', shortLabel: '타이탄알', category: 'boss', accentHex: '#0d9488', secondaryHex: '#67e8f9', description: '심해 거갑 해안 타이탄 보스를 소환합니다.' },
+];
 
 export function getMonsterElementProfile(species: MonsterSpecies): {
   element: ElementKind;
@@ -2240,10 +2472,20 @@ export interface MultiplayerHudState {
   transport?: 'ws' | 'http' | 'offline';
   serverHost?: string;
   roomId: string;
+  roomGameMode?: GameMode;
   playerId: string | null;
   playerName: string;
   onlineCount: number;
   remotePlayers: Array<{ id: string; name: string; x: number; z: number }>;
+}
+
+export interface SharedSpawnedMonsterPayload {
+  id: string;
+  eggId: SpawnEggId;
+  x: number;
+  z: number;
+  worldTier: number;
+  summonerName: string;
 }
 
 export interface FloatingFeedback {
@@ -2256,10 +2498,15 @@ export interface FloatingFeedback {
 
 export type HotbarItemId =
   | `weapon:${WeaponId}`
+  | `armor:${ArmorId}`
+  | `food:${FoodId}`
+  | `material:${MaterialItemId}`
+  | `egg:${SpawnEggId}`
   | 'action:gather'
   | 'action:sapling'
   | 'action:lantern'
   | 'action:potion'
+  | 'action:food'
   | 'action:forge'
   | 'action:housing'
   | 'action:inventory'
@@ -2273,7 +2520,30 @@ export function getDefaultHotbarForClass(classId: PlayerClassId): HotbarItemId[]
     'weapon:stone_pickaxe',
     'action:sapling',
     'action:potion',
+    'action:food',
     'action:forge',
+  ];
+}
+
+export function getCreativeDefaultHotbarForClass(classId: PlayerClassId): HotbarItemId[] {
+  const starter = getClassSpec(classId).starterWeapon;
+  const legendaryByClass: Record<PlayerClassId, WeaponId> = {
+    warrior: 'rune_greatsword',
+    archer: 'azure_star_bow',
+    healer: 'seraphic_staff',
+    mage: 'astral_nova_staff',
+    rogue: 'eclipse_dagger',
+  };
+  return [
+    `weapon:${legendaryByClass[classId] || starter}`,
+    'weapon:iron_axe',
+    'weapon:iron_pickaxe',
+    'action:housing',
+    'action:sapling',
+    'food:apple',
+    'action:potion',
+    'egg:forest_slime',
+    'egg:azure_dragon_boss',
   ];
 }
 
@@ -2283,42 +2553,97 @@ export interface HotbarOptionMeta {
   id: HotbarItemId;
   shortLabel: string;
   label: string;
-  kind: 'weapon' | 'action';
+  kind: 'weapon' | 'armor' | 'food' | 'material' | 'egg' | 'action';
   weaponId?: WeaponId;
+  armorId?: ArmorId;
+  foodId?: FoodId;
+  materialId?: MaterialItemId;
+  eggId?: SpawnEggId;
+  accentHex?: string;
+  secondaryHex?: string;
   hint: string;
 }
 
 export const HOTBAR_PICKER_OPTIONS: HotbarOptionMeta[] = [
   // Universal tools & class weapons
-  { id: 'weapon:crystal_sword', shortLabel: '수정검', label: '수정 단검', kind: 'weapon', weaponId: 'crystal_sword', hint: '전사 기본 검' },
-  { id: 'weapon:hunter_blade', shortLabel: '송곳니검', label: '야수 송곳니 장검', kind: 'weapon', weaponId: 'hunter_blade', hint: '전사 사냥검' },
-  { id: 'weapon:essence_battleaxe', shortLabel: '정수도끼', label: '마력 정수 전투도끼', kind: 'weapon', weaponId: 'essence_battleaxe', hint: '전사 전투도끼' },
-  { id: 'weapon:rune_greatsword', shortLabel: '룬대검', label: '룬 수정 대검', kind: 'weapon', weaponId: 'rune_greatsword', hint: '전사 전설 대검' },
-  { id: 'weapon:recurve_bow', shortLabel: '리커브활', label: '사냥꾼 리커브 활', kind: 'weapon', weaponId: 'recurve_bow', hint: '궁수 기본 활' },
-  { id: 'weapon:windstrider_bow', shortLabel: '질풍장궁', label: '질풍 장궁', kind: 'weapon', weaponId: 'windstrider_bow', hint: '궁수 고급 활' },
-  { id: 'weapon:azure_star_bow', shortLabel: '청룡성궁', label: '청룡 성궁', kind: 'weapon', weaponId: 'azure_star_bow', hint: '궁수 전설 활' },
-  { id: 'weapon:emerald_wing_staff', shortLabel: '날개지팡이', label: '에메랄드 날개 지팡이', kind: 'weapon', weaponId: 'emerald_wing_staff', hint: '힐러 기본 지팡이' },
-  { id: 'weapon:sanctuary_staff', shortLabel: '성역지팡이', label: '성역의 치유 지팡이', kind: 'weapon', weaponId: 'sanctuary_staff', hint: '힐러 고급 지팡이' },
-  { id: 'weapon:seraphic_staff', shortLabel: '세라핌봉', label: '세라핌 성광 지팡이', kind: 'weapon', weaponId: 'seraphic_staff', hint: '힐러 전설 지팡이' },
-  { id: 'weapon:crystal_wand', shortLabel: '수정마법봉', label: '푸른 수정 마법봉', kind: 'weapon', weaponId: 'crystal_wand', hint: '마법사 기본 봉' },
-  { id: 'weapon:amethyst_wand', shortLabel: '자수정봉', label: '자수정 비전 지팡이', kind: 'weapon', weaponId: 'amethyst_wand', hint: '마법사 고급 봉' },
-  { id: 'weapon:astral_nova_staff', shortLabel: '별빛지팡이', label: '별빛 대마도사 지팡이', kind: 'weapon', weaponId: 'astral_nova_staff', hint: '마법사 전설 봉' },
-  { id: 'weapon:tactical_dagger', shortLabel: '전술단검', label: '전술 강철 단검', kind: 'weapon', weaponId: 'tactical_dagger', hint: '도둑 기본 단검' },
-  { id: 'weapon:viper_dagger', shortLabel: '맹독단검', label: '맹독 쌍아 단검', kind: 'weapon', weaponId: 'viper_dagger', hint: '도둑 고급 단검' },
-  { id: 'weapon:eclipse_dagger', shortLabel: '월식단검', label: '월식 그림자 단검', kind: 'weapon', weaponId: 'eclipse_dagger', hint: '도둑 전설 단검' },
-  { id: 'weapon:stone_axe', shortLabel: '석재도끼', label: '석재 벌목 도끼', kind: 'weapon', weaponId: 'stone_axe', hint: '공용 벌목 도끼' },
-  { id: 'weapon:stone_pickaxe', shortLabel: '석재곡괭이', label: '석재 채광 곡괭이', kind: 'weapon', weaponId: 'stone_pickaxe', hint: '공용 채광 곡괭이' },
-  { id: 'weapon:iron_axe', shortLabel: '강철도끼', label: '제련 강철 도끼', kind: 'weapon', weaponId: 'iron_axe', hint: '공용 고급 도끼' },
-  { id: 'weapon:iron_pickaxe', shortLabel: '강철곡괭이', label: '제련 강철 곡괭이', kind: 'weapon', weaponId: 'iron_pickaxe', hint: '공용 고급 곡괭이' },
-  { id: 'action:sapling', shortLabel: '묘목', label: '묘목 심기', kind: 'action', hint: '원목 1개 소모' },
-  { id: 'action:lantern', shortLabel: '횃불', label: '개척지 횃불', kind: 'action', hint: '원목 2 · 석재 1 소모' },
-  { id: 'action:potion', shortLabel: '치유물약', label: '치유 물약 사용', kind: 'action', hint: 'HP +50 · 스태미나 +40' },
-  { id: 'action:gather', shortLabel: '채집/공격', label: '채집 · 전투 공격', kind: 'action', hint: '가장 가까운 대상 상호작용' },
-  { id: 'action:forge', shortLabel: '제작', label: '제작 작업대', kind: 'action', hint: '도구·무기·방어구·물품 제작' },
-  { id: 'action:housing', shortLabel: '하우징', label: '하우징 건축 모드', kind: 'action', hint: '집·텃밭 설치 및 수정 (H)' },
-  { id: 'action:inventory', shortLabel: '가방', label: '인벤토리 · 장비', kind: 'action', hint: '보유 자원·전리품 관리' },
-  { id: 'action:expand', shortLabel: '확장', label: '월드 확장', kind: 'action', hint: '프론티어 구역 개방' },
+  { id: 'weapon:crystal_sword', shortLabel: '수정검', label: '수정 단검', kind: 'weapon', weaponId: 'crystal_sword', accentHex: '#67e8f9', hint: '전사 기본 검' },
+  { id: 'weapon:hunter_blade', shortLabel: '송곳니검', label: '야수 송곳니 장검', kind: 'weapon', weaponId: 'hunter_blade', accentHex: '#fbbf24', hint: '전사 사냥검' },
+  { id: 'weapon:essence_battleaxe', shortLabel: '정수도끼', label: '마력 정수 전투도끼', kind: 'weapon', weaponId: 'essence_battleaxe', accentHex: '#34d399', hint: '전사 전투도끼' },
+  { id: 'weapon:rune_greatsword', shortLabel: '룬대검', label: '룬 수정 대검', kind: 'weapon', weaponId: 'rune_greatsword', accentHex: '#60a5fa', hint: '전사 전설 대검' },
+  { id: 'weapon:recurve_bow', shortLabel: '리커브활', label: '사냥꾼 리커브 활', kind: 'weapon', weaponId: 'recurve_bow', accentHex: '#86efac', hint: '궁수 기본 활' },
+  { id: 'weapon:windstrider_bow', shortLabel: '질풍장궁', label: '질풍 장궁', kind: 'weapon', weaponId: 'windstrider_bow', accentHex: '#34d399', hint: '궁수 고급 활' },
+  { id: 'weapon:azure_star_bow', shortLabel: '청룡성궁', label: '청룡 성궁', kind: 'weapon', weaponId: 'azure_star_bow', accentHex: '#38bdf8', hint: '궁수 전설 활' },
+  { id: 'weapon:emerald_wing_staff', shortLabel: '날개지팡이', label: '에메랄드 날개 지팡이', kind: 'weapon', weaponId: 'emerald_wing_staff', accentHex: '#6ee7b7', hint: '힐러 기본 지팡이' },
+  { id: 'weapon:sanctuary_staff', shortLabel: '성역지팡이', label: '성역의 치유 지팡이', kind: 'weapon', weaponId: 'sanctuary_staff', accentHex: '#fde047', hint: '힐러 고급 지팡이' },
+  { id: 'weapon:seraphic_staff', shortLabel: '세라핌봉', label: '세라핌 성광 지팡이', kind: 'weapon', weaponId: 'seraphic_staff', accentHex: '#fef08a', hint: '힐러 전설 지팡이' },
+  { id: 'weapon:crystal_wand', shortLabel: '수정마법봉', label: '푸른 수정 마법봉', kind: 'weapon', weaponId: 'crystal_wand', accentHex: '#c084fc', hint: '마법사 기본 봉' },
+  { id: 'weapon:amethyst_wand', shortLabel: '자수정봉', label: '자수정 비전 지팡이', kind: 'weapon', weaponId: 'amethyst_wand', accentHex: '#a855f7', hint: '마법사 고급 봉' },
+  { id: 'weapon:astral_nova_staff', shortLabel: '별빛지팡이', label: '별빛 대마도사 지팡이', kind: 'weapon', weaponId: 'astral_nova_staff', accentHex: '#f0abfc', hint: '마법사 전설 봉' },
+  { id: 'weapon:tactical_dagger', shortLabel: '전술단검', label: '전술 강철 단검', kind: 'weapon', weaponId: 'tactical_dagger', accentHex: '#cbd5e1', hint: '도둑 기본 단검' },
+  { id: 'weapon:viper_dagger', shortLabel: '맹독단검', label: '맹독 쌍아 단검', kind: 'weapon', weaponId: 'viper_dagger', accentHex: '#4ade80', hint: '도둑 고급 단검' },
+  { id: 'weapon:eclipse_dagger', shortLabel: '월식단검', label: '월식 그림자 단검', kind: 'weapon', weaponId: 'eclipse_dagger', accentHex: '#38bdf8', hint: '도둑 전설 단검' },
+  { id: 'weapon:stone_axe', shortLabel: '석재도끼', label: '석재 벌목 도끼', kind: 'weapon', weaponId: 'stone_axe', accentHex: '#e2c18a', hint: '공용 벌목 도끼' },
+  { id: 'weapon:stone_pickaxe', shortLabel: '석재곡괭이', label: '석재 채광 곡괭이', kind: 'weapon', weaponId: 'stone_pickaxe', accentHex: '#cbd5e1', hint: '공용 채광 곡괭이' },
+  { id: 'weapon:iron_axe', shortLabel: '강철도끼', label: '제련 강철 도끼', kind: 'weapon', weaponId: 'iron_axe', accentHex: '#93c5fd', hint: '공용 고급 도끼' },
+  { id: 'weapon:iron_pickaxe', shortLabel: '강철곡괭이', label: '제련 강철 곡괭이', kind: 'weapon', weaponId: 'iron_pickaxe', accentHex: '#bae6fd', hint: '공용 고급 곡괭이' },
+  { id: 'action:sapling', shortLabel: '묘목', label: '묘목 심기', kind: 'action', accentHex: '#86efac', hint: '원목 1개 소모 (크리에이티브 무료)' },
+  { id: 'action:lantern', shortLabel: '횃불', label: '개척지 횃불', kind: 'action', accentHex: '#fde047', hint: '원목 2 · 석재 1 소모 (크리에이티브 무료)' },
+  { id: 'action:potion', shortLabel: '치유물약', label: '치유 물약 사용', kind: 'action', accentHex: '#4ade80', hint: 'HP +50 · 스태미나 +40' },
+  { id: 'action:food', shortLabel: '음식', label: '음식 먹기 (배고픔 회복)', kind: 'action', accentHex: '#fb923c', hint: '선택한 음식 섭취 · 배고픔 회복' },
+  { id: 'action:gather', shortLabel: '채집/공격', label: '채집 · 전투 공격', kind: 'action', accentHex: '#f7f3ea', hint: '가장 가까운 대상 상호작용' },
+  { id: 'action:forge', shortLabel: '제작', label: '제작 작업대', kind: 'action', accentHex: '#f59e0b', hint: '도구·무기·방어구·물품 제작' },
+  { id: 'action:housing', shortLabel: '하우징', label: '하우징 건축 모드', kind: 'action', accentHex: '#38f2c8', hint: '집·텃밭 설치 및 수정 (H)' },
+  { id: 'action:inventory', shortLabel: '가방', label: '인벤토리 · 장비', kind: 'action', accentHex: '#7dd3fc', hint: '보유 자원·음식·전리품 관리' },
+  { id: 'action:expand', shortLabel: '확장', label: '월드 확장', kind: 'action', accentHex: '#86efac', hint: '프론티어 구역 개방' },
 ];
+
+export const ALL_CREATIVE_HOTBAR_OPTIONS: HotbarOptionMeta[] = [
+  ...HOTBAR_PICKER_OPTIONS,
+  ...ARMORS_CATALOG.map((a): HotbarOptionMeta => ({
+    id: `armor:${a.id}`,
+    shortLabel: a.name.length > 6 ? `${a.name.slice(0, 6)}` : a.name,
+    label: a.name,
+    kind: 'armor',
+    armorId: a.id,
+    accentHex: a.accentHex,
+    hint: `${a.tierLabel} · HP +${a.bonusHp}`,
+  })),
+  ...FOOD_CATALOG.map((f): HotbarOptionMeta => ({
+    id: `food:${f.id}`,
+    shortLabel: f.shortLabel,
+    label: f.name,
+    kind: 'food',
+    foodId: f.id,
+    accentHex: f.colorHex,
+    hint: `배고픔 +${f.hungerRestore} · ${f.sourceLabel}`,
+  })),
+  ...MATERIAL_ITEMS_CATALOG.map((m): HotbarOptionMeta => ({
+    id: `material:${m.id}`,
+    shortLabel: m.shortLabel,
+    label: m.name,
+    kind: 'material',
+    materialId: m.id,
+    accentHex: m.accentHex,
+    hint: m.hint,
+  })),
+  ...SPAWN_EGGS_CATALOG.map((e): HotbarOptionMeta => ({
+    id: `egg:${e.id}`,
+    shortLabel: e.shortLabel,
+    label: e.name,
+    kind: 'egg',
+    eggId: e.id,
+    accentHex: e.accentHex,
+    secondaryHex: e.secondaryHex,
+    hint: e.description,
+  })),
+];
+
+export function getHotbarOptionMeta(id: HotbarItemId): HotbarOptionMeta {
+  return (
+    ALL_CREATIVE_HOTBAR_OPTIONS.find((o) => o.id === id) ||
+    HOTBAR_PICKER_OPTIONS[0]
+  );
+}
 
 export type QuestId =
   | 'gather_wood_10'
@@ -2343,8 +2668,109 @@ export interface QuestSnapshot {
   rewardText: string;
 }
 
+export type DailyQuestId =
+  | 'daily_gather_wood'
+  | 'daily_mine_ore'
+  | 'daily_hunt_monsters'
+  | 'daily_harvest_food'
+  | 'daily_build_or_plant'
+  | 'daily_coop_challenge';
+
+export interface DailyQuestSpec {
+  id: DailyQuestId;
+  title: string;
+  description: string;
+  target: number;
+  rewardText: string;
+  expReward: number;
+  masteryPoints?: number;
+  invReward: Partial<Inventory>;
+}
+
+export const DAILY_QUESTS_CATALOG: DailyQuestSpec[] = [
+  {
+    id: 'daily_gather_wood',
+    title: '오늘의 벌목 의뢰',
+    description: '초원·숲의 나무를 벌목해 원목 8개를 확보하세요. (멀티 협동 공유)',
+    target: 8,
+    rewardText: '+60 EXP · 석재 +4 · 사과 +3',
+    expReward: 60,
+    invReward: { stone: 4, apple: 3 },
+  },
+  {
+    id: 'daily_mine_ore',
+    title: '오늘의 광맥 채광',
+    description: '석재·철광석·마력 수정 광맥에서 광물 6개를 채광하세요. (멀티 협동 공유)',
+    target: 6,
+    rewardText: '+65 EXP · 철광석 +3 · 원목 +3',
+    expReward: 65,
+    invReward: { iron: 3, wood: 3 },
+  },
+  {
+    id: 'daily_hunt_monsters',
+    title: '오늘의 몬스터·정령 토벌',
+    description: '필드 몬스터 또는 원소 정령 5마리를 처치하세요. (멀티 협동 공유)',
+    target: 5,
+    rewardText: '+85 EXP · 치유 물약 +2 · 정수 +2',
+    expReward: 85,
+    invReward: { potion: 2, essence: 2 },
+  },
+  {
+    id: 'daily_harvest_food',
+    title: '오늘의 자연 식량 수확',
+    description: '사과·베리·버섯·당근·벌꿀 등 자연 음식을 5개 채집하세요. (멀티 협동 공유)',
+    target: 5,
+    rewardText: '+55 EXP · 벌꿀 +2 · 당근 +2',
+    expReward: 55,
+    invReward: { honey: 2, carrot: 2 },
+  },
+  {
+    id: 'daily_build_or_plant',
+    title: '오늘의 개척과 건축',
+    description: '하우징 부품을 설치하거나 묘목을 3회 심어 월드를 가꾸세요. (멀티 협동 공유)',
+    target: 3,
+    rewardText: '+70 EXP · 원목 +5 · 석재 +5',
+    expReward: 70,
+    invReward: { wood: 5, stone: 5 },
+  },
+  {
+    id: 'daily_coop_challenge',
+    title: '오늘의 보스·협동 도전',
+    description: '중간 보스·시련의 탑 보스를 토벌하거나 멀티 동료와 함께 1회 도전하세요.',
+    target: 1,
+    rewardText: '+140 EXP · 마력 수정 +3 · 스킬 +1P',
+    expReward: 140,
+    masteryPoints: 1,
+    invReward: { crystal: 3 },
+  },
+];
+
+export interface DailyQuestSnapshot {
+  id: DailyQuestId;
+  title: string;
+  description: string;
+  current: number;
+  target: number;
+  completed: boolean;
+  claimed: boolean;
+  rewardText: string;
+  lastContributor?: string;
+}
+
+export interface DailyQuestsHudState {
+  dateKey: string;
+  quests: DailyQuestSnapshot[];
+  coopSynced: boolean;
+  completedCount: number;
+  totalCount: number;
+  allClearClaimed: boolean;
+}
+
 export interface HudSnapshot {
   phase: GamePhase;
+  gameMode: GameMode;
+  worldId: string | null;
+  worldName: string;
   playerClass: PlayerClassId;
   worldTier: number;
   zoneName: string;
@@ -2357,6 +2783,11 @@ export interface HudSnapshot {
   maxHp: number;
   stamina: number;
   maxStamina: number;
+  hunger: number;
+  maxHunger: number;
+  selectedFood: FoodId;
+  cameraMode: CameraPerspectiveMode;
+  isFullscreen: boolean;
   isSprinting: boolean;
   isGrounded: boolean;
   isSwimming: boolean;
@@ -2374,6 +2805,7 @@ export interface HudSnapshot {
   autoEquipTool: boolean;
   hotbarSlots: HotbarItemId[];
   quests: QuestSnapshot[];
+  dailyQuests: DailyQuestsHudState;
   activeEmote: EmoteId | null;
   nearbyHint: InteractableHint | null;
   gatherProgress: number;
@@ -2416,4 +2848,5 @@ export interface HudSnapshot {
   lastSavedAt: number | null;
   hasSavedGame: boolean;
   saveSummary: SaveMetaSummary | null;
+  fps?: number;
 }

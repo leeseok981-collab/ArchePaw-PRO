@@ -389,6 +389,266 @@ export function buildTerrainMesh(grassTexture: THREE.CanvasTexture): THREE.Mesh 
   return mesh;
 }
 
+export interface WaterUniforms {
+  uTime: { value: number };
+  uSunDir: { value: THREE.Vector3 };
+  uSunColor: { value: THREE.Color };
+  uSkyHorizon: { value: THREE.Color };
+  uSkyZenith: { value: THREE.Color };
+  uFogColor: { value: THREE.Color };
+  uFogDensity: { value: number };
+  uNightFactor: { value: number };
+  uShallowColor: { value: THREE.Color };
+  uDeepColor: { value: THREE.Color };
+  uFoamColor: { value: THREE.Color };
+  uWaveScale: { value: number };
+  uSunReflectStrength: { value: number };
+}
+
+const WATER_VERTEX_SHADER = /* glsl */ `
+  attribute float aDepth;
+  attribute float aEdgeFade;
+
+  uniform float uTime;
+  uniform float uWaveScale;
+
+  varying vec3 vWorldPos;
+  varying float vDepth;
+  varying float vEdgeFade;
+  varying float vFogDist;
+
+  void main() {
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+    float depthFactor = smoothstep(0.02, 0.55, aDepth);
+    float waveA = sin(worldPos.x * 0.42 + uTime * 1.45) * 0.032;
+    float waveB = cos(worldPos.z * 0.48 - uTime * 1.18 + worldPos.x * 0.16) * 0.026;
+    float waveOffset = (waveA + waveB) * uWaveScale * depthFactor;
+    worldPos.y += waveOffset;
+
+    vWorldPos = worldPos.xyz;
+    vDepth = aDepth + waveOffset;
+    vEdgeFade = aEdgeFade;
+
+    vec4 mvPos = viewMatrix * worldPos;
+    vFogDist = length(mvPos.xyz);
+    gl_Position = projectionMatrix * mvPos;
+  }
+`;
+
+const WATER_FRAGMENT_SHADER = /* glsl */ `
+  uniform float uTime;
+  uniform vec3 uSunDir;
+  uniform vec3 uSunColor;
+  uniform vec3 uSkyHorizon;
+  uniform vec3 uSkyZenith;
+  uniform vec3 uFogColor;
+  uniform float uFogDensity;
+  uniform float uNightFactor;
+  uniform vec3 uShallowColor;
+  uniform vec3 uDeepColor;
+  uniform vec3 uFoamColor;
+  uniform float uWaveScale;
+  uniform float uSunReflectStrength;
+
+  varying vec3 vWorldPos;
+  varying float vDepth;
+  varying float vEdgeFade;
+  varying float vFogDist;
+
+  // Fast 2D procedural ripple height & gradient for animated water normals
+  float rippleHeight(vec2 p, float t) {
+    float r1 = sin(p.x * 0.88 + t * 1.35 + sin(p.y * 0.45 - t * 0.72) * 1.15);
+    float r2 = cos(p.y * 1.12 - t * 1.55 + cos(p.x * 0.52 + t * 0.84) * 1.05);
+    float r3 = sin((p.x * 1.65 - p.y * 1.42) + t * 2.15) * 0.48;
+    float r4 = cos((p.x * 2.85 + p.y * 2.45) - t * 2.75) * 0.24;
+    return (r1 + r2 + r3 + r4) * 0.25;
+  }
+
+  void main() {
+    // Feather out cleanly where terrain rises above the water plane
+    if (vDepth < -0.05 || vEdgeFade <= 0.002) {
+      discard;
+    }
+
+    vec2 p = vWorldPos.xz;
+    float eps = 0.22;
+    float h0 = rippleHeight(p, uTime);
+    float hx = rippleHeight(p + vec2(eps, 0.0), uTime);
+    float hz = rippleHeight(p + vec2(0.0, eps), uTime);
+
+    float normalAmp = (0.15 + 0.14 * uWaveScale) * smoothstep(-0.02, 0.35, vDepth);
+    vec3 N = normalize(vec3((h0 - hx) * normalAmp / eps, 1.0, (h0 - hz) * normalAmp / eps));
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    vec3 L = normalize(uSunDir);
+
+    // Depth-based color absorption (turquoise shallows -> rich sapphire deep water)
+    float deepT = smoothstep(0.06, 2.35, vDepth);
+    vec3 waterCol = mix(uShallowColor, uDeepColor, deepT);
+
+    // Gentle sunlit underwater caustics in shallow water
+    float shallowMask = (1.0 - smoothstep(0.1, 1.65, vDepth)) * smoothstep(0.0, 0.15, vDepth);
+    float caustic = pow(max(0.0, sin(p.x * 2.3 + uTime * 1.8) * cos(p.y * 2.1 - uTime * 1.55) * 0.5 + 0.5), 3.0);
+    waterCol += uSunColor * caustic * shallowMask * 0.26 * (1.0 - uNightFactor * 0.72);
+
+    // Subtle sky Fresnel reflection
+    float ndotv = max(dot(N, V), 0.0);
+    float fresnel = pow(1.0 - ndotv, 3.4);
+    vec3 skyReflect = mix(uSkyHorizon, uSkyZenith, 0.32 + 0.25 * ndotv);
+    waterCol = mix(waterCol, skyReflect, clamp(fresnel * 0.62 + 0.08, 0.0, 0.76));
+
+    // Real-time directional sun / moon reflection glint path across ripples
+    vec3 H = normalize(L + V);
+    float ndoth = max(dot(N, H), 0.0);
+    float sunElevation = smoothstep(-0.04, 0.12, L.y);
+    float rippleSparkle = 0.68 + 0.32 * sin(p.x * 4.8 + p.y * 3.9 + uTime * 4.4);
+    float specTight = pow(ndoth, 170.0) * 2.35 * rippleSparkle;
+    float specMid = pow(ndoth, 36.0) * 0.62;
+    float specBroad = pow(ndoth, 11.0) * 0.22;
+    vec3 glintColor = mix(uSunColor, vec3(1.0, 0.98, 0.92), 0.45);
+    float reflectWeight = uSunReflectStrength * (0.28 + 0.72 * sunElevation) * (1.0 - uNightFactor * 0.32);
+    waterCol += glintColor * (specTight + specMid + specBroad) * reflectWeight;
+
+    // Organic animated shoreline foam where water meets terrain (no hard flat edge)
+    float shoreNoise = sin(p.x * 1.85 + uTime * 1.2) * cos(p.y * 1.95 - uTime * 0.95);
+    float lappingWave = sin(vDepth * 13.5 - uTime * 2.55 + shoreNoise * 2.4) * 0.5 + 0.5;
+    float innerFoam = (1.0 - smoothstep(0.01, 0.22, vDepth)) * smoothstep(-0.02, 0.06, vDepth);
+    float waveRibbon = smoothstep(0.56, 0.86, lappingWave) * (1.0 - smoothstep(0.08, 0.48, vDepth)) * smoothstep(0.02, 0.11, vDepth);
+    float foamMask = clamp(innerFoam * 0.78 + waveRibbon * 0.58, 0.0, 0.92);
+    vec3 litFoam = uFoamColor * mix(vec3(0.58, 0.66, 0.82), mix(vec3(1.0), uSunColor, 0.22), 1.0 - uNightFactor);
+    waterCol = mix(waterCol, litFoam, foamMask * 0.78);
+
+    // Distance exponential fog matching scene.fog
+    float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * vFogDist * vFogDist);
+    waterCol = mix(waterCol, uFogColor, clamp(fogFactor, 0.0, 1.0));
+
+    // Smooth shoreline alpha feathering (eliminates harsh geometric cutoff)
+    float shoreAlpha = smoothstep(-0.02, 0.24, vDepth) * vEdgeFade;
+    float baseAlpha = mix(0.56, 0.91, smoothstep(0.04, 1.25, vDepth));
+    float finalAlpha = clamp(baseAlpha + foamMask * 0.32 + specTight * 0.25, 0.0, 0.96) * shoreAlpha;
+
+    gl_FragColor = vec4(waterCol, finalAlpha);
+  }
+`;
+
+export function createStylizedWaterMaterial(options?: {
+  shallowHex?: number;
+  deepHex?: number;
+  foamHex?: number;
+  waveScale?: number;
+  sunReflectStrength?: number;
+}): { material: THREE.ShaderMaterial; uniforms: WaterUniforms } {
+  const uniforms: WaterUniforms = {
+    uTime: { value: 0 },
+    uSunDir: { value: new THREE.Vector3(0.45, 0.55, 0.65).normalize() },
+    uSunColor: { value: new THREE.Color(0xfff1cf) },
+    uSkyHorizon: { value: new THREE.Color(0xbce7ff) },
+    uSkyZenith: { value: new THREE.Color(0x2f7dd4) },
+    uFogColor: { value: new THREE.Color(0xb8dcf0) },
+    uFogDensity: { value: 0.0024 },
+    uNightFactor: { value: 0 },
+    uShallowColor: { value: new THREE.Color(options?.shallowHex ?? 0x45d5d2) },
+    uDeepColor: { value: new THREE.Color(options?.deepHex ?? 0x0d6796) },
+    uFoamColor: { value: new THREE.Color(options?.foamHex ?? 0xebfbff) },
+    uWaveScale: { value: options?.waveScale ?? 1.0 },
+    uSunReflectStrength: { value: options?.sunReflectStrength ?? 1.15 },
+  };
+
+  const material = new THREE.ShaderMaterial({
+    vertexShader: WATER_VERTEX_SHADER,
+    fragmentShader: WATER_FRAGMENT_SHADER,
+    uniforms: uniforms as unknown as Record<string, THREE.IUniform>,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+
+  return { material, uniforms };
+}
+
+/**
+ * Builds a subdivided horizontal water patch with per-vertex terrain depth (`aDepth`)
+ * and smooth circular outer boundary feathering (`aEdgeFade`) so shorelines blend cleanly.
+ */
+function createDepthAwareWaterPatchGeometry(
+  centerX: number,
+  centerZ: number,
+  waterY: number,
+  radius: number,
+  segments: number,
+): THREE.BufferGeometry {
+  const span = radius * 2.24;
+  const geom = new THREE.PlaneGeometry(span, span, segments, segments);
+  geom.rotateX(-Math.PI / 2);
+
+  const pos = geom.attributes.position as THREE.BufferAttribute;
+  const depths = new Float32Array(pos.count);
+  const edgeFades = new Float32Array(pos.count);
+  const maxR = radius * 1.12;
+
+  for (let i = 0; i < pos.count; i++) {
+    const lx = pos.getX(i);
+    const lz = pos.getZ(i);
+    const wx = centerX + lx;
+    const wz = centerZ + lz;
+    const terrainY = getTerrainHeight(wx, wz);
+    depths[i] = waterY - terrainY;
+    const dist = Math.hypot(lx, lz);
+    const fade = 1 - Math.max(0, Math.min(1, (dist - radius * 0.92) / (maxR - radius * 0.92)));
+    edgeFades[i] = fade;
+  }
+
+  geom.setAttribute('aDepth', new THREE.BufferAttribute(depths, 1));
+  geom.setAttribute('aEdgeFade', new THREE.BufferAttribute(edgeFades, 1));
+  return geom;
+}
+
+/**
+ * Builds a shoreline-clustered Eastern Ocean plane with higher vertex resolution
+ * along the western beach edge (x ~ 86..170) for organic beach surf blending.
+ */
+function createEasternOceanGeometry(
+  centerX: number,
+  centerZ: number,
+  waterY: number,
+  width: number,
+  length: number,
+  segX: number,
+  segZ: number,
+): THREE.BufferGeometry {
+  const geom = new THREE.PlaneGeometry(width, length, segX, segZ);
+  geom.rotateX(-Math.PI / 2);
+
+  const pos = geom.attributes.position as THREE.BufferAttribute;
+  const depths = new Float32Array(pos.count);
+  const edgeFades = new Float32Array(pos.count);
+  const halfW = width * 0.5;
+  const halfL = length * 0.5;
+
+  for (let i = 0; i < pos.count; i++) {
+    // Non-linear X clustering: denser near the western beach (-halfW), wider toward open sea (+halfW)
+    const u = (pos.getX(i) + halfW) / width; // 0..1
+    const warpedU = Math.pow(u, 1.55);
+    const lx = -halfW + warpedU * width;
+    const lz = pos.getZ(i);
+    pos.setX(i, lx);
+
+    const wx = centerX + lx;
+    const wz = centerZ + lz;
+    const terrainY = getTerrainHeight(wx, wz);
+    // Beyond the playable terrain edge, smoothly assume open deep ocean
+    depths[i] = wx > 195 ? Math.max(3.6, waterY - terrainY) : waterY - terrainY;
+
+    const zEdge = 1 - Math.max(0, (Math.abs(lz) - (halfL - 36)) / 36);
+    const xFarEdge = 1 - Math.max(0, (lx - (halfW - 36)) / 36);
+    edgeFades[i] = Math.min(zEdge, xFarEdge);
+  }
+
+  geom.setAttribute('aDepth', new THREE.BufferAttribute(depths, 1));
+  geom.setAttribute('aEdgeFade', new THREE.BufferAttribute(edgeFades, 1));
+  geom.computeBoundingSphere();
+  return geom;
+}
+
 export interface WorldWaterBundle {
   group: THREE.Group;
   lakeMesh: THREE.Mesh;
@@ -396,83 +656,117 @@ export interface WorldWaterBundle {
   lakeFoam: THREE.Mesh;
   oasisMesh: THREE.Mesh;
   pondMesh: THREE.Mesh;
+  update: (params: {
+    elapsed: number;
+    sunDir: THREE.Vector3;
+    sunColor: THREE.Color;
+    skyHorizon: THREE.Color;
+    skyZenith: THREE.Color;
+    fogColor: THREE.Color;
+    fogDensity: number;
+    nightFactor: number;
+  }) => void;
 }
 
 /**
- * Builds sparkling water planes for Central Lake, Eastern Ocean (+X), North Desert Oasis, and West Wind Pond.
+ * Builds depth-aware sparkling water planes for Central Lake, Eastern Ocean (+X),
+ * North Desert Oasis, and West Wind Pond with soft shoreline foam and real-time sun reflection.
  */
 export function buildWaterMeshes(): WorldWaterBundle {
   const group = new THREE.Group();
   group.name = 'world_water';
 
-  const lakeMat = new THREE.MeshStandardMaterial({
-    color: 0x35b4c9,
-    emissive: 0x0b3a4a,
-    emissiveIntensity: 0.22,
-    roughness: 0.14,
-    metalness: 0.18,
-    transparent: true,
-    opacity: 0.82,
-    depthWrite: false,
+  const inlandWater = createStylizedWaterMaterial({
+    shallowHex: 0x4ee0d8,
+    deepHex: 0x11739e,
+    foamHex: 0xf2fdff,
+    waveScale: 0.85,
+    sunReflectStrength: 1.28,
   });
-  const lakeMesh = new THREE.Mesh(
-    new THREE.CircleGeometry(CENTRAL_LAKE_RADIUS + 1.4, 36),
-    lakeMat,
+
+  const lakeGeom = createDepthAwareWaterPatchGeometry(
+    CENTRAL_LAKE_X,
+    CENTRAL_LAKE_Z,
+    WATER_LEVEL_LAKE,
+    CENTRAL_LAKE_RADIUS + 2.2,
+    46,
   );
-  lakeMesh.rotation.x = -Math.PI / 2;
+  const lakeMesh = new THREE.Mesh(lakeGeom, inlandWater.material);
   lakeMesh.position.set(CENTRAL_LAKE_X, WATER_LEVEL_LAKE, CENTRAL_LAKE_Z);
-  lakeMesh.receiveShadow = true;
+  lakeMesh.renderOrder = 2;
   group.add(lakeMesh);
 
-  const foamMat = new THREE.MeshBasicMaterial({
-    color: 0xdff8ff,
-    transparent: true,
-    opacity: 0.34,
-    depthWrite: false,
-    fog: false,
-  });
+  // Kept invisible for backwards compatibility (shoreline foam is now handled organically inside the water shader)
   const lakeFoam = new THREE.Mesh(
-    new THREE.RingGeometry(CENTRAL_LAKE_RADIUS - 0.75, CENTRAL_LAKE_RADIUS + 0.25, 36),
-    foamMat,
+    new THREE.BufferGeometry(),
+    new THREE.MeshBasicMaterial({ visible: false }),
   );
-  lakeFoam.rotation.x = -Math.PI / 2;
-  lakeFoam.position.set(CENTRAL_LAKE_X, WATER_LEVEL_LAKE + 0.02, CENTRAL_LAKE_Z);
-  group.add(lakeFoam);
+  lakeFoam.visible = false;
 
   // North Desert Oasis sparkling turquoise pool
-  const oasisMesh = new THREE.Mesh(
-    new THREE.CircleGeometry(NORTH_OASIS_RADIUS + 1.2, 32),
-    lakeMat,
+  const oasisGeom = createDepthAwareWaterPatchGeometry(
+    NORTH_OASIS_X,
+    NORTH_OASIS_Z,
+    WATER_LEVEL_OASIS,
+    NORTH_OASIS_RADIUS + 2.0,
+    34,
   );
-  oasisMesh.rotation.x = -Math.PI / 2;
+  const oasisMesh = new THREE.Mesh(oasisGeom, inlandWater.material);
   oasisMesh.position.set(NORTH_OASIS_X, WATER_LEVEL_OASIS, NORTH_OASIS_Z);
+  oasisMesh.renderOrder = 2;
   group.add(oasisMesh);
 
   // West Wind Valley clear emerald pond
-  const pondMesh = new THREE.Mesh(
-    new THREE.CircleGeometry(WEST_POND_RADIUS + 1.2, 32),
-    lakeMat,
+  const pondGeom = createDepthAwareWaterPatchGeometry(
+    WEST_POND_X,
+    WEST_POND_Z,
+    WATER_LEVEL_VALLEY_POND,
+    WEST_POND_RADIUS + 2.0,
+    34,
   );
-  pondMesh.rotation.x = -Math.PI / 2;
+  const pondMesh = new THREE.Mesh(pondGeom, inlandWater.material);
   pondMesh.position.set(WEST_POND_X, WATER_LEVEL_VALLEY_POND, WEST_POND_Z);
+  pondMesh.renderOrder = 2;
   group.add(pondMesh);
 
-  // Sweeping Eastern Ocean plane (+X coastal sea)
-  const coastMat = new THREE.MeshStandardMaterial({
-    color: 0x1a94c4,
-    emissive: 0x072d44,
-    emissiveIntensity: 0.22,
-    roughness: 0.16,
-    metalness: 0.22,
-    transparent: true,
-    opacity: 0.85,
-    depthWrite: false,
+  // Sweeping Eastern Ocean plane (+X coastal sea) with clustered beach vertices
+  const oceanWater = createStylizedWaterMaterial({
+    shallowHex: 0x3ec8d8,
+    deepHex: 0x094e80,
+    foamHex: 0xecfbff,
+    waveScale: 1.35,
+    sunReflectStrength: 1.38,
   });
-  const coastMesh = new THREE.Mesh(new THREE.PlaneGeometry(480, 920, 20, 24), coastMat);
-  coastMesh.rotation.x = -Math.PI / 2;
+  const coastGeom = createEasternOceanGeometry(324, 0, WATER_LEVEL_COAST, 480, 920, 64, 72);
+  const coastMesh = new THREE.Mesh(coastGeom, oceanWater.material);
   coastMesh.position.set(324, WATER_LEVEL_COAST, 0);
-  coastMesh.receiveShadow = true;
+  coastMesh.renderOrder = 2;
   group.add(coastMesh);
 
-  return { group, lakeMesh, coastMesh, lakeFoam, oasisMesh, pondMesh };
+  const allUniforms = [inlandWater.uniforms, oceanWater.uniforms];
+
+  const update: WorldWaterBundle['update'] = ({
+    elapsed,
+    sunDir,
+    sunColor,
+    skyHorizon,
+    skyZenith,
+    fogColor,
+    fogDensity,
+    nightFactor,
+  }) => {
+    for (let i = 0; i < allUniforms.length; i++) {
+      const u = allUniforms[i];
+      u.uTime.value = elapsed;
+      u.uSunDir.value.copy(sunDir);
+      u.uSunColor.value.copy(sunColor);
+      u.uSkyHorizon.value.copy(skyHorizon);
+      u.uSkyZenith.value.copy(skyZenith);
+      u.uFogColor.value.copy(fogColor);
+      u.uFogDensity.value = fogDensity;
+      u.uNightFactor.value = nightFactor;
+    }
+  };
+
+  return { group, lakeMesh, coastMesh, lakeFoam, oasisMesh, pondMesh, update };
 }

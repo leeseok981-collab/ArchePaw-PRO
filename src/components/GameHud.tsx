@@ -69,17 +69,34 @@ import {
   Snowflake,
   Waves,
   ShieldAlert,
+  Settings,
+  WifiOff,
+  Map as MapIcon,
+  Utensils,
+  Apple,
+  Camera,
+  Maximize2,
+  Minimize2,
+  Calendar,
+  Clock,
 } from 'lucide-react';
 import {
+  ALL_CREATIVE_HOTBAR_OPTIONS,
+  ArmorId,
   ARMORS_CATALOG,
+  DailyQuestId,
   ELEMENT_META,
   EmoteId,
   EMOTES_CATALOG,
   FloatingFeedback,
+  FOOD_CATALOG,
+  FoodId,
   getClassSkillsCatalog,
   getClassSpec,
+  getHotbarOptionMeta,
   getHousingPieceCost,
   getHousingRepairCost,
+  getTotalFoodCount,
   HOTBAR_PICKER_OPTIONS,
   HotbarItemId,
   HOUSING_CATALOG,
@@ -92,7 +109,11 @@ import {
   HousingStageId,
   HudSnapshot,
   Inventory,
+  MATERIAL_ITEMS_CATALOG,
+  MaterialItemId,
   QuestId,
+  SPAWN_EGGS_CATALOG,
+  SpawnEggId,
   TimePreset,
   TRIAL_TOWER_FLOORS,
   WarriorSkillId,
@@ -102,6 +123,7 @@ import {
   WORLD_TIERS,
 } from '../game/types';
 import { formatSavedTime } from '../game/saveSystem';
+import { MobileUiScale } from '../game/userConfig';
 import { WorkshopTab } from './WorkshopModal';
 import { WeatherScreenOverlay } from './WeatherScreenOverlay';
 
@@ -119,6 +141,8 @@ interface GameHudProps {
   onTriggerEmote: (id: EmoteId) => void;
   onCancelEmote: () => void;
   onClaimQuest: (id: QuestId) => void;
+  onClaimDailyQuest: (id: DailyQuestId) => void;
+  onClaimDailyAllClear: () => void;
   onToggleBgm: () => void;
   onToggleMute: () => void;
   onPause: () => void;
@@ -163,6 +187,18 @@ interface GameHudProps {
   onOpenTrialTower: () => void;
   onStartTrialFloor: (floor: number) => void;
   onExitTrialTower: () => void;
+  isOnline: boolean;
+  showFps: boolean;
+  mobileUiScale: MobileUiScale;
+  profileAvatarUrl?: string;
+  profileAvatarKind?: 'preset' | 'google' | 'upload';
+  onOpenSettings: () => void;
+  onOpenMultiplayer: () => void;
+  onOpenProfile: () => void;
+  onEatFood: (foodId?: FoodId) => void;
+  onSelectFood: (foodId: FoodId) => void;
+  onCycleCameraMode: () => void;
+  onToggleFullscreen: () => void;
 }
 
 const TIME_PRESETS: Array<{ id: TimePreset; label: string }> = [
@@ -194,6 +230,8 @@ export const GameHud: React.FC<GameHudProps> = ({
   onTriggerEmote,
   onCancelEmote,
   onClaimQuest,
+  onClaimDailyQuest,
+  onClaimDailyAllClear,
   onToggleBgm,
   onToggleMute,
   onPause,
@@ -238,25 +276,61 @@ export const GameHud: React.FC<GameHudProps> = ({
   onOpenTrialTower,
   onStartTrialFloor,
   onExitTrialTower,
+  isOnline,
+  showFps,
+  mobileUiScale,
+  profileAvatarUrl,
+  profileAvatarKind,
+  onOpenSettings,
+  onOpenMultiplayer,
+  onOpenProfile,
+  onEatFood,
+  onSelectFood,
+  onCycleCameraMode,
+  onToggleFullscreen,
 }) => {
   const [isCompactViewport, setIsCompactViewport] = useState<boolean>(
     () => typeof window !== 'undefined' && window.innerWidth < 768,
   );
   const [dockCollapsed, setDockCollapsed] = useState<boolean>(
-    () => typeof window !== 'undefined' && window.innerWidth < 768,
+    () => typeof window !== 'undefined' && window.innerWidth < 820,
+  );
+  const [minimapOpen, setMinimapOpen] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.innerWidth >= 768,
   );
   const [envDrawerOpen, setEnvDrawerOpen] = useState(false);
+  const [foodPickerOpen, setFoodPickerOpen] = useState(false);
+  const [questTab, setQuestTab] = useState<'daily' | 'main'>('daily');
+  const [dailyCountdown, setDailyCountdown] = useState<string>(() => {
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+    const mins = Math.max(0, Math.floor((midnight.getTime() - now.getTime()) / 60000));
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return `${String(h).padStart(2, '0')}시간 ${String(m).padStart(2, '0')}분`;
+  });
+
+  useEffect(() => {
+    const updateCountdown = () => {
+      const now = new Date();
+      const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+      const mins = Math.max(0, Math.floor((midnight.getTime() - now.getTime()) / 60000));
+      const h = Math.floor(mins / 60);
+      const m = mins % 60;
+      setDailyCountdown(`${String(h).padStart(2, '0')}시간 ${String(m).padStart(2, '0')}분`);
+    };
+    const timer = window.setInterval(updateCountdown, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [hotbarEditMode, setHotbarEditMode] = useState(false);
   const [editingSlotIndex, setEditingSlotIndex] = useState<number | null>(null);
+  const [creativePickerCat, setCreativePickerCat] = useState<
+    'all' | 'egg' | 'weapon' | 'armor' | 'food' | 'material' | 'action'
+  >('all');
   const [avatarFailed, setAvatarFailed] = useState(false);
   const [showAllPieces, setShowAllPieces] = useState(false);
   const [minimapWide, setMinimapWide] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
-  const [codeCopied, setCodeCopied] = useState(false);
-  const [mpPopoverOpen, setMpPopoverOpen] = useState(false);
-  const [nameDraft, setNameDraft] = useState('');
-  const [roomDraft, setRoomDraft] = useState('');
-  const [roomRegisterNotice, setRoomRegisterNotice] = useState<string | null>(null);
   const [minimapLayers, setMinimapLayers] = useState({
     resources: true,
     saplings: true,
@@ -264,15 +338,22 @@ export const GameHud: React.FC<GameHudProps> = ({
     housing: true,
   });
 
+  const isCompactMobile = isCompactViewport || mobileTouchEnabled;
+  const isCompactScale = mobileUiScale === 'compact';
+  const isCreative = hud.gameMode === 'creative';
+
   useEffect(() => {
-    const onResize = () => setIsCompactViewport(window.innerWidth < 768);
+    const onResize = () => {
+      const narrow = window.innerWidth < 768;
+      setIsCompactViewport(narrow);
+    };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
   useEffect(() => {
     setAvatarFailed(false);
-  }, [hud.playerClass]);
+  }, [hud.playerClass, profileAvatarUrl]);
 
   const handleCopyShareLink = () => {
     const shareUrl = onGetShareUrl();
@@ -303,42 +384,20 @@ export const GameHud: React.FC<GameHudProps> = ({
     }
   };
 
-  const handleCopyRoomCodeOnly = () => {
-    const code = hud.multiplayer.roomId || 'main';
-    const mark = () => {
-      setCodeCopied(true);
-      window.setTimeout(() => setCodeCopied(false), 1800);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(code).then(mark).catch(() => {});
-    }
-  };
-
-  const parseRoomCodeOrUrl = (raw: string): string => {
-    const trimmed = raw.trim();
-    if (!trimmed) return '';
-    try {
-      if (trimmed.includes('://') || trimmed.includes('?room=') || trimmed.includes('#room=')) {
-        const normalized = trimmed.startsWith('http')
-          ? trimmed
-          : `https://local.invalid/${trimmed.replace(/^\/+/, '')}`;
-        const u = new URL(normalized);
-        const q = u.searchParams.get('room');
-        if (q) return q.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 28);
-        const hm = u.hash.match(/room=([a-zA-Z0-9_-]{1,28})/);
-        if (hm?.[1]) return hm[1];
-      }
-    } catch {
-      // Fallback below
-    }
-    const m = trimmed.match(/[?&#]room=([a-zA-Z0-9_-]{1,28})/);
-    if (m?.[1]) return m[1];
-    return trimmed.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 28);
-  };
-
   const hpPct = Math.round((hud.hp / Math.max(hud.maxHp, 1)) * 100);
   const staminaPct = Math.round((hud.stamina / Math.max(hud.maxStamina, 1)) * 100);
+  const hungerPct = Math.max(0, Math.min(100, Math.round((hud.hunger / Math.max(hud.maxHunger, 1)) * 100)));
   const expPct = Math.round((hud.exp / Math.max(hud.nextExp, 1)) * 100);
+  const totalFoodCount = getTotalFoodCount(hud.inventory);
+  const selectedFoodSpec =
+    FOOD_CATALOG.find((f) => f.id === hud.selectedFood) || FOOD_CATALOG[0];
+  const selectedFoodCount = hud.inventory[selectedFoodSpec.id] ?? 0;
+  const cameraModeShortLabel =
+    hud.cameraMode === 'first'
+      ? '1인칭'
+      : hud.cameraMode === 'third_front'
+        ? '전면'
+        : '후면';
 
   const equippedSpec =
     WEAPONS_CATALOG.find((w) => w.id === hud.equippedWeapon) || WEAPONS_CATALOG[0];
@@ -424,7 +483,63 @@ export const GameHud: React.FC<GameHudProps> = ({
   };
 
   const renderHotbarIcon = (itemId: HotbarItemId, owned: boolean) => {
-    const dim = owned ? '' : 'opacity-45';
+    const dim = owned || isCreative ? '' : 'opacity-45';
+    if (itemId.startsWith('egg:')) {
+      const eggId = itemId.slice(4) as SpawnEggId;
+      const egg = SPAWN_EGGS_CATALOG.find((e) => e.id === eggId);
+      const base = egg?.accentHex || '#cbd5e1';
+      const spot = egg?.secondaryHex || '#475569';
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M12 2.5C7.6 2.5 4.8 9.2 4.8 14.3C4.8 18.8 7.9 21.5 12 21.5C16.1 21.5 19.2 18.8 19.2 14.3C19.2 9.2 16.4 2.5 12 2.5Z"
+            fill={base}
+            stroke="#f8fafc"
+            strokeOpacity="0.6"
+            strokeWidth="1.4"
+          />
+          <circle cx="9.6" cy="11.2" r="2.1" fill={spot} />
+          <circle cx="14.5" cy="14.8" r="2.4" fill={spot} />
+          <circle cx="10.8" cy="17.2" r="1.4" fill={spot} />
+          <ellipse cx="9.5" cy="7.5" rx="1.4" ry="2.2" fill="#ffffff" fillOpacity="0.35" />
+        </svg>
+      );
+    }
+    if (itemId.startsWith('armor:')) {
+      const armorId = itemId.slice(6) as ArmorId;
+      const armor = ARMORS_CATALOG.find((a) => a.id === armorId);
+      return (
+        <Shield
+          className={`w-4 h-4 ${dim}`}
+          style={{ color: armor?.accentHex || '#60a5fa' }}
+        />
+      );
+    }
+    if (itemId.startsWith('food:')) {
+      const foodId = itemId.slice(5) as FoodId;
+      const food = FOOD_CATALOG.find((f) => f.id === foodId);
+      return (
+        <Apple
+          className="w-4 h-4"
+          style={{ color: food?.colorHex || '#fb923c' }}
+        />
+      );
+    }
+    if (itemId.startsWith('material:')) {
+      const matId = itemId.slice(9) as MaterialItemId;
+      const mat = MATERIAL_ITEMS_CATALOG.find((m) => m.id === matId);
+      return (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <polygon
+            points="12,3 21,12 12,21 3,12"
+            fill={mat?.accentHex || '#cbd5e1'}
+            stroke="#ffffff"
+            strokeOpacity="0.55"
+            strokeWidth="1.5"
+          />
+        </svg>
+      );
+    }
     switch (itemId) {
       case 'weapon:crystal_sword':
         return <Sword className={`w-4 h-4 text-[#67e8f9] ${dim}`} />;
@@ -472,6 +587,13 @@ export const GameHud: React.FC<GameHudProps> = ({
         return <Flame className="w-4 h-4 text-[#fde047]" />;
       case 'action:potion':
         return <FlaskConical className="w-4 h-4 text-[#4ade80]" />;
+      case 'action:food':
+        return (
+          <Apple
+            className="w-4 h-4"
+            style={{ color: isCreative || totalFoodCount > 0 ? selectedFoodSpec.colorHex : '#64748b' }}
+          />
+        );
       case 'action:gather':
         return <Hand className="w-4 h-4 text-[#f7f3ea]" />;
       case 'action:forge':
@@ -482,6 +604,8 @@ export const GameHud: React.FC<GameHudProps> = ({
         return <Backpack className="w-4 h-4 text-[#7dd3fc]" />;
       case 'action:expand':
         return <Compass className="w-4 h-4 text-[#86efac]" />;
+      default:
+        return <Sparkles className="w-4 h-4 text-[#e2e8f0]" />;
     }
   };
 
@@ -489,26 +613,57 @@ export const GameHud: React.FC<GameHudProps> = ({
     if (itemId.startsWith('weapon:')) {
       const wId = itemId.slice(7) as WeaponId;
       if (hud.equippedWeapon === wId) return { text: '장착', tone: 'text-[#67e8f9]' };
-      if (!hud.ownedWeapons.includes(wId)) return { text: '미제련', tone: 'text-[#94a3b8]' };
+      if (!isCreative && !hud.ownedWeapons.includes(wId)) return { text: '미제련', tone: 'text-[#94a3b8]' };
       return null;
+    }
+    if (itemId.startsWith('armor:')) {
+      const aId = itemId.slice(6) as ArmorId;
+      if (hud.equippedArmor === aId) return { text: '착용', tone: 'text-[#67e8f9]' };
+      return null;
+    }
+    if (itemId.startsWith('egg:')) {
+      return { text: '소환', tone: 'text-[#fde047]' };
+    }
+    if (itemId.startsWith('food:')) {
+      const fId = itemId.slice(5) as FoodId;
+      const cnt = hud.inventory[fId] ?? 0;
+      return {
+        text: isCreative ? '∞' : `${cnt}`,
+        tone: isCreative || cnt >= 1 ? 'text-[#fdba74]' : 'text-[#94a3b8]',
+      };
+    }
+    if (itemId.startsWith('material:')) {
+      const mId = itemId.slice(9) as MaterialItemId;
+      const cnt = hud.inventory[mId] ?? 0;
+      return {
+        text: isCreative ? '∞' : `${cnt}`,
+        tone: 'text-[#cbd5e1]',
+      };
     }
     if (itemId === 'action:sapling') {
       return {
-        text: `${hud.inventory.wood}`,
-        tone: hud.inventory.wood >= 1 ? 'text-[#86efac]' : 'text-[#f87171]',
+        text: isCreative ? '∞' : `${hud.inventory.wood}`,
+        tone: isCreative || hud.inventory.wood >= 1 ? 'text-[#86efac]' : 'text-[#f87171]',
       };
     }
     if (itemId === 'action:lantern') {
       const craftable = Math.min(Math.floor(hud.inventory.wood / 2), hud.inventory.stone);
       return {
-        text: `${craftable}`,
-        tone: craftable >= 1 ? 'text-[#fde047]' : 'text-[#94a3b8]',
+        text: isCreative ? '∞' : `${craftable}`,
+        tone: isCreative || craftable >= 1 ? 'text-[#fde047]' : 'text-[#94a3b8]',
       };
     }
     if (itemId === 'action:potion') {
       return {
-        text: `${hud.inventory.potion}`,
-        tone: hud.inventory.potion >= 1 ? 'text-[#4ade80]' : 'text-[#94a3b8]',
+        text: isCreative ? '∞' : `${hud.inventory.potion}`,
+        tone: isCreative || hud.inventory.potion >= 1 ? 'text-[#4ade80]' : 'text-[#94a3b8]',
+      };
+    }
+    if (itemId === 'action:food') {
+      const shown = selectedFoodCount > 0 ? selectedFoodCount : totalFoodCount;
+      return {
+        text: isCreative ? '∞' : `${shown}`,
+        tone: isCreative || shown >= 1 ? 'text-[#fdba74]' : 'text-[#94a3b8]',
       };
     }
     if (itemId === 'action:forge' && canForgeSomething) {
@@ -583,12 +738,31 @@ export const GameHud: React.FC<GameHudProps> = ({
       )}
       <div className="fixed inset-0 z-10 pointer-events-none select-none">
       {/* TOP-LEFT: Compact Character Plate (Responsive for PC & Mobile) */}
-      <div className="absolute top-2.5 left-2.5 sm:top-4 sm:left-4 flex items-center gap-2 sm:gap-3 px-2.5 py-2 sm:px-3.5 sm:py-2.5 rounded-xl bg-[#141920]/88 border border-white/10 shadow-md pointer-events-auto">
-        <div
-          className="relative w-10 h-10 sm:w-12 sm:h-12 rounded-lg overflow-hidden border bg-[#f5efe4] shrink-0"
+      <div
+        className="absolute flex items-center gap-2 sm:gap-3 px-2.5 py-1.5 sm:px-3.5 sm:py-2.5 rounded-xl bg-[#0d1219]/88 border border-white/14 shadow-lg pointer-events-auto max-w-[48vw] sm:max-w-none"
+        style={{
+          top: 'max(8px, env(safe-area-inset-top, 0px))',
+          left: 'max(8px, env(safe-area-inset-left, 0px))',
+        }}
+      >
+        <button
+          type="button"
+          onClick={onOpenProfile}
+          title="프로필 및 닉네임 설정 열기"
+          className="relative w-8 h-8 sm:w-12 sm:h-12 rounded-lg overflow-hidden border bg-[#f5efe4] shrink-0 cursor-pointer"
           style={{ borderColor: `${classSpec.accentHex}99` }}
         >
-          {!avatarFailed ? (
+          {!avatarFailed &&
+          profileAvatarUrl &&
+          (profileAvatarKind === 'upload' || profileAvatarKind === 'google') ? (
+            <img
+              src={profileAvatarUrl}
+              alt="프로필 아바타"
+              referrerPolicy="no-referrer"
+              onError={() => setAvatarFailed(true)}
+              className="w-full h-full object-cover pointer-events-none"
+            />
+          ) : !avatarFailed ? (
             <img
               src={classSpec.portraitUrl}
               alt={`${classSpec.name} (${classSpec.catTitle}) 정면 초상화`}
@@ -607,34 +781,35 @@ export const GameHud: React.FC<GameHudProps> = ({
               {classSpec.name.slice(0, 1)}
             </div>
           )}
-        </div>
+        </button>
 
-        <div className="flex flex-col min-w-[126px] sm:min-w-[172px]">
-          <div className="flex items-baseline justify-between gap-2 sm:gap-3">
+        <div className="flex flex-col min-w-0 flex-1 sm:min-w-[172px]">
+          <div className="flex items-baseline justify-between gap-1.5 sm:gap-3">
             <button
               type="button"
-              onClick={() => {
-                setNameDraft(hud.multiplayer.playerName || classSpec.defaultNickname);
-                setRoomDraft(hud.multiplayer.roomId || 'main');
-                setMpPopoverOpen(true);
-              }}
-              title="클릭하여 닉네임 변경"
-              className="text-xs sm:text-sm font-bold text-[#f7f3ea] hover:text-[#fde68a] transition-colors whitespace-nowrap truncate max-w-[96px] sm:max-w-[132px] text-left cursor-pointer"
+              onClick={onOpenProfile}
+              title="클릭하여 프로필·닉네임 변경"
+              className="text-[11px] sm:text-sm font-bold text-[#f7f3ea] hover:text-[#fde68a] transition-colors whitespace-nowrap truncate max-w-[74px] sm:max-w-[132px] text-left cursor-pointer"
             >
               {hud.multiplayer.playerName || classSpec.defaultNickname}
             </button>
-            <span className="text-[11px] sm:text-xs font-mono-num whitespace-nowrap shrink-0 flex items-center gap-1">
-              <span className="font-semibold" style={{ color: classSpec.accentHex }}>
+            <span className="text-[10px] sm:text-xs font-mono-num whitespace-nowrap shrink-0 flex items-center gap-1">
+              {isCreative && (
+                <>
+                  <span className="font-bold text-[#67e8f9]">크리에이티브</span>
+                  <span className="text-[#94a3b8]">·</span>
+                </>
+              )}
+              <span className="hidden sm:inline font-semibold" style={{ color: classSpec.accentHex }}>
                 {classSpec.name}
               </span>
-              <span className="text-[#94a3b8]">·</span>
-              <span className="text-[#e6b43c]">Lv.{hud.level}</span>
+              <span className="hidden sm:inline text-[#94a3b8]">·</span>
+              <span className="text-[#e6b43c] font-bold">Lv.{hud.level}</span>
             </span>
           </div>
 
-          <div className="text-[10px] sm:text-[11px] text-[#aeb7c4] mt-0.5 whitespace-nowrap truncate max-w-[140px] sm:max-w-none">
-            {hud.zoneName}
-            <span className="hidden sm:inline"> · {equippedSpec.name}</span>
+          <div className="hidden sm:block text-[11px] text-[#aeb7c4] mt-0.5 whitespace-nowrap truncate">
+            {hud.zoneName} · {equippedSpec.name}
           </div>
           <button
             type="button"
@@ -650,38 +825,89 @@ export const GameHud: React.FC<GameHudProps> = ({
           </button>
 
           {/* HP Bar */}
-          <div className="mt-1.5 flex items-center gap-1.5">
-            <Heart className="w-3 h-3 text-[#f87171] shrink-0" />
-            <div className="flex-1 h-1.5 rounded-full bg-[#242c37] overflow-hidden">
+          <div className="mt-1 sm:mt-1.5 flex items-center gap-1.5">
+            <Heart className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-[#f87171] shrink-0" />
+            <div className="flex-1 h-1.5 rounded-full bg-[#242c37] overflow-hidden min-w-[54px]">
               <div
                 className="h-full rounded-full transition-transform duration-100 origin-left"
                 style={{
-                  transform: `scaleX(${hpPct / 100})`,
-                  backgroundColor: hpPct < 35 ? '#ef4444' : '#f87171',
+                  transform: `scaleX(${isCreative ? 1 : hpPct / 100})`,
+                  backgroundColor: isCreative ? '#34d399' : hpPct < 35 ? '#ef4444' : '#f87171',
                 }}
               />
             </div>
-            <span className="text-[10px] text-[#fecaca] font-mono-num w-11 text-right">
-              {hud.hp}/{hud.maxHp}
+            <span className="text-[9px] sm:text-[10px] text-[#fecaca] font-mono-num sm:w-11 text-right shrink-0">
+              {isCreative ? (
+                <span className="text-[#6ee7b7] font-bold">∞</span>
+              ) : (
+                <>
+                  <span className="sm:hidden">{hud.hp}</span>
+                  <span className="hidden sm:inline">
+                    {hud.hp}/{hud.maxHp}
+                  </span>
+                </>
+              )}
             </span>
           </div>
 
           {/* Stamina Bar */}
-          <div className="mt-1 flex items-center gap-1.5">
-            <span className="text-[9px] font-mono-num text-[#e6b43c] w-3 text-center shrink-0">S</span>
-            <div className="flex-1 h-1.5 rounded-full bg-[#242c37] overflow-hidden">
+          <div className="mt-0.5 sm:mt-1 flex items-center gap-1.5">
+            <span className="text-[8px] sm:text-[9px] font-mono-num text-[#e6b43c] w-2.5 sm:w-3 text-center shrink-0">S</span>
+            <div className="flex-1 h-1 sm:h-1.5 rounded-full bg-[#242c37] overflow-hidden min-w-[54px]">
               <div
                 className="h-full rounded-full transition-transform duration-75 origin-left"
                 style={{
-                  transform: `scaleX(${staminaPct / 100})`,
-                  backgroundColor: hud.isSprinting ? '#62e5ff' : '#e6b43c',
+                  transform: `scaleX(${isCreative ? 1 : staminaPct / 100})`,
+                  backgroundColor: isCreative || hud.isSprinting ? '#62e5ff' : '#e6b43c',
                 }}
               />
             </div>
-            <span className="text-[10px] text-[#cbd5e1] font-mono-num w-11 text-right">
-              {hud.stamina}
+            <span className="text-[9px] sm:text-[10px] text-[#cbd5e1] font-mono-num sm:w-11 text-right shrink-0">
+              {isCreative ? <span className="text-[#67e8f9] font-bold">∞</span> : hud.stamina}
             </span>
           </div>
+
+          {/* Hunger Bar (click to quick-eat food!) */}
+          <button
+            type="button"
+            onClick={() => onEatFood()}
+            title={
+              isCreative
+                ? '크리에이티브 모드: 배고픔 무한'
+                : `배고픔 ${hud.hunger}/${hud.maxHunger} · 클릭하거나 6키로 음식 섭취`
+            }
+            className="mt-0.5 sm:mt-1 flex items-center gap-1.5 w-full text-left cursor-pointer group"
+          >
+            <Utensils
+              className={`w-2.5 h-2.5 sm:w-3 sm:h-3 shrink-0 transition-colors ${
+                !isCreative && hungerPct <= 20
+                  ? 'text-[#f87171]'
+                  : 'text-[#fb923c] group-hover:text-[#fde047]'
+              }`}
+            />
+            <div className="flex-1 h-1 sm:h-1.5 rounded-full bg-[#242c37] overflow-hidden min-w-[54px]">
+              <div
+                className="h-full rounded-full transition-transform duration-150 origin-left"
+                style={{
+                  transform: `scaleX(${isCreative ? 1 : hungerPct / 100})`,
+                  backgroundColor: isCreative
+                    ? '#fb923c'
+                    : hungerPct <= 20
+                      ? '#ef4444'
+                      : hungerPct <= 45
+                        ? '#f97316'
+                        : '#fb923c',
+                }}
+              />
+            </div>
+            <span
+              className={`text-[9px] sm:text-[10px] font-mono-num sm:w-11 text-right shrink-0 ${
+                !isCreative && hungerPct <= 20 ? 'text-[#fca5a5] font-bold' : 'text-[#fed7aa]'
+              }`}
+            >
+              {isCreative ? <span className="text-[#fdba74] font-bold">∞</span> : hud.hunger}
+            </span>
+          </button>
 
           <div className="mt-1 h-[2px] w-full rounded-full bg-[#242c37] overflow-hidden">
             <div
@@ -919,14 +1145,20 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       )}
 
-      {/* TOP-RIGHT: Compact Clock/Weather Readout + Minimap Radar + Audio/Pause */}
-      <div className="absolute top-4 right-4 flex flex-col items-end gap-2 pointer-events-auto">
-        <div className="flex items-center gap-2">
+      {/* TOP-RIGHT: Compact Clock/Weather Readout + Minimap Radar + Multiplayer/Settings/Pause */}
+      <div
+        className="absolute flex flex-col items-end gap-1.5 sm:gap-2 pointer-events-auto max-w-[50vw] sm:max-w-none"
+        style={{
+          top: 'max(8px, env(safe-area-inset-top, 0px))',
+          right: 'max(8px, env(safe-area-inset-right, 0px))',
+        }}
+      >
+        <div className="flex items-center justify-end gap-1 sm:gap-1.5 flex-wrap">
           {canExpandNow && (
             <button
               type="button"
               onClick={() => onOpenWorkshop('expand')}
-              className="px-3 py-2 rounded-lg bg-[#1e3a4a]/95 hover:bg-[#244a5f] border border-[#62e5ff]/60 text-xs font-semibold text-[#c8f5ff] transition-colors cursor-pointer whitespace-nowrap"
+              className="hidden md:inline-flex px-3 py-2 rounded-lg bg-[#1e3a4a]/95 hover:bg-[#244a5f] border border-[#62e5ff]/60 text-xs font-semibold text-[#c8f5ff] transition-colors cursor-pointer whitespace-nowrap"
             >
               월드 확장 가능
             </button>
@@ -935,218 +1167,89 @@ export const GameHud: React.FC<GameHudProps> = ({
             type="button"
             onClick={() => {
               setEditingSlotIndex(null);
+              if (dockCollapsed) setDockCollapsed(false);
               setEnvDrawerOpen((v) => !v);
             }}
             title="시간 및 날씨 설정 열기"
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#141920]/88 hover:bg-[#1f2733] border border-white/10 text-xs text-[#e2e8f0] transition-colors cursor-pointer whitespace-nowrap"
+            className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 h-8 sm:h-9 rounded-lg bg-[#141920]/90 hover:bg-[#1f2733] border border-white/10 text-[11px] sm:text-xs text-[#e2e8f0] transition-colors cursor-pointer whitespace-nowrap"
           >
             {renderWeatherIcon()}
             <span className="font-mono-num font-semibold">{hud.timeClockText}</span>
-            <span className="text-[#94a3b8]">·</span>
-            <span>{hud.timePhaseLabel}</span>
-            <span className="text-[#94a3b8]">·</span>
-            <span>{hud.weatherLabel}</span>
+            <span className="hidden md:inline text-[#94a3b8]">·</span>
+            <span className="hidden md:inline">{hud.timePhaseLabel}</span>
+            <span className="hidden lg:inline text-[#94a3b8]">·</span>
+            <span className="hidden lg:inline">{hud.weatherLabel}</span>
           </button>
-          {/* Multiplayer Room & Share Link Widget */}
-          <div className="relative flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => {
-                setNameDraft(hud.multiplayer.playerName);
-                setRoomDraft(hud.multiplayer.roomId);
-                setMpPopoverOpen((v) => !v);
-              }}
-              title={`멀티플레이 월드 방 (${hud.multiplayer.roomId}) · 클릭해 접속자, 방 코드 이동 및 닉네임 설정`}
-              className="flex items-center gap-1.5 px-2 sm:px-2.5 h-9 rounded-lg bg-[#141920]/88 hover:bg-[#1f2936] border border-[#62e5ff]/35 text-xs font-semibold text-[#bae6fd] transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <Users className="w-3.5 h-3.5 text-[#38bdf8]" />
-              <span className="font-mono-num">{hud.multiplayer.onlineCount}명</span>
-            </button>
+
+          {/* Minecraft-style Multiplayer Server Manager Trigger */}
+          <button
+            type="button"
+            onClick={onOpenMultiplayer}
+            title={
+              isOnline
+                ? `멀티플레이 서버 관리 (현재 방: ${hud.multiplayer.roomId})`
+                : '오프라인 모드 — 저장된 서버 및 기록 보기'
+            }
+            className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 h-8 sm:h-9 rounded-lg border text-[11px] sm:text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+              !isOnline
+                ? 'bg-[#1c1a16]/90 border-amber-400/35 text-amber-200/90'
+                : 'bg-[#141920]/90 hover:bg-[#1f2936] border-[#62e5ff]/35 text-[#bae6fd]'
+            }`}
+          >
+            {!isOnline ? (
+              <>
+                <WifiOff className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                <span className="hidden sm:inline">오프라인</span>
+              </>
+            ) : (
+              <>
+                <Users className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
+                <span className="font-mono-num">{hud.multiplayer.onlineCount}</span>
+                <span className="hidden sm:inline">명</span>
+              </>
+            )}
+          </button>
+
+          {isOnline && (
             <button
               type="button"
               onClick={handleCopyShareLink}
-              title="현재 월드 멀티플레이 접속 링크 복사 (PC·모바일 동일 공유 서버 접속)"
-              className={`flex items-center gap-1 px-2 sm:px-2.5 h-9 rounded-lg border text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+              title="현재 월드 멀티플레이 접속 링크 복사"
+              className={`hidden md:flex items-center gap-1 px-2.5 h-9 rounded-lg border text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                 linkCopied
                   ? 'bg-[#15352d] border-[#38f2c8] text-[#5df7d4]'
-                  : 'bg-[#141920]/88 hover:bg-[#1f2a36] border-[#e6b43c]/40 text-[#fde68a]'
+                  : 'bg-[#141920]/90 hover:bg-[#1f2a36] border-[#e6b43c]/40 text-[#fde68a]'
               }`}
             >
               {linkCopied ? <Check className="w-3.5 h-3.5" /> : <Link2 className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">{linkCopied ? '링크 복사됨' : '링크 공유'}</span>
+              <span>{linkCopied ? '복사됨' : '링크 공유'}</span>
             </button>
+          )}
 
-            {mpPopoverOpen && (
-              <div className="absolute right-0 top-11 w-72 p-3 rounded-xl bg-[#131922]/96 border border-white/14 shadow-2xl z-30 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-[#f7f3ea]">
-                    <Users className="w-3.5 h-3.5 text-[#38bdf8]" />
-                    <span>실시간 동시 접속 월드</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setMpPopoverOpen(false)}
-                    className="p-0.5 rounded hover:bg-white/10 text-[#94a3b8] hover:text-white cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                <div className="text-[11px] text-[#cbd5e1] bg-[#1a2330] rounded-lg px-2.5 py-1.5 border border-white/8 space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[#94a3b8]">통합 공유 서버</span>
-                    <span
-                      className={`font-semibold text-[10px] ${
-                        hud.multiplayer.connected ? 'text-[#5df7d4]' : 'text-[#fca5a5]'
-                      }`}
-                    >
-                      {hud.multiplayer.connected
-                        ? `연결됨 (${hud.multiplayer.transport === 'http' ? '모바일 HTTP' : '실시간 WS'})`
-                        : '서버 재연결 중...'}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[#94a3b8]">현재 방 코드</span>
-                    <span className="font-mono-num font-bold text-[#7dd3fc]">
-                      {hud.multiplayer.roomId}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="block text-[10px] text-[#94a3b8]">
-                    접속 코드 등록 (복사한 링크 또는 방 코드 붙여넣기)
-                  </label>
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const parsed = parseRoomCodeOrUrl(roomDraft);
-                      if (!parsed) {
-                        setRoomRegisterNotice('유효한 접속 코드나 링크를 입력해주세요.');
-                        return;
-                      }
-                      setRoomDraft(parsed);
-                      onJoinRoom(parsed);
-                      setRoomRegisterNotice(`접속 코드 "${parsed}" 등록 완료!`);
-                    }}
-                    className="flex items-center gap-1"
-                  >
-                    <input
-                      type="text"
-                      value={roomDraft}
-                      maxLength={220}
-                      onChange={(e) => {
-                        setRoomDraft(e.target.value);
-                        setRoomRegisterNotice(null);
-                      }}
-                      placeholder="방 코드 또는 공유 링크 붙여넣기"
-                      className="flex-1 min-w-0 px-2 py-1 rounded bg-[#0e141c] border border-white/12 text-xs font-mono-num text-[#f7f3ea] focus:outline-none focus:border-[#62e5ff]"
-                    />
-                    <button
-                      type="submit"
-                      className="px-2 py-1 rounded bg-[#1d3948] hover:bg-[#274b5e] text-[11px] font-semibold text-[#c8f5ff] cursor-pointer whitespace-nowrap"
-                    >
-                      코드 등록
-                    </button>
-                  </form>
-                  {roomRegisterNotice && (
-                    <div className="text-[10px] text-[#5df7d4]">{roomRegisterNotice}</div>
-                  )}
-                </div>
-
-                <div className="space-y-1">
-                  <label className="block text-[10px] text-[#94a3b8]">내 닉네임</label>
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const clean = nameDraft.trim();
-                      if (clean) {
-                        onSetPlayerName(clean);
-                      }
-                    }}
-                    className="flex items-center gap-1"
-                  >
-                    <input
-                      type="text"
-                      value={nameDraft}
-                      maxLength={20}
-                      onChange={(e) => setNameDraft(e.target.value)}
-                      placeholder="냥기사 이름"
-                      className="flex-1 min-w-0 px-2 py-1 rounded bg-[#0e141c] border border-white/12 text-xs text-[#f7f3ea] focus:outline-none focus:border-[#62e5ff]"
-                    />
-                    <button
-                      type="submit"
-                      className="px-2 py-1 rounded bg-[#1f3b4a] hover:bg-[#2a5064] text-[11px] font-semibold text-[#c8f5ff] cursor-pointer whitespace-nowrap"
-                    >
-                      변경
-                    </button>
-                  </form>
-                </div>
-
-                <div className="space-y-1">
-                  <div className="text-[10px] text-[#94a3b8]">
-                    접속 중 ({hud.multiplayer.onlineCount}명)
-                  </div>
-                  <div className="max-h-24 overflow-y-auto space-y-1 text-[11px]">
-                    <div className="flex items-center justify-between px-2 py-1 rounded bg-[#182634] text-[#f7f3ea]">
-                      <span className="truncate font-semibold">{hud.multiplayer.playerName} (나)</span>
-                      <span className="text-[10px] text-[#5df7d4]">접속</span>
-                    </div>
-                    {hud.multiplayer.remotePlayers.map((rp) => (
-                      <div
-                        key={rp.id}
-                        className="flex items-center justify-between px-2 py-1 rounded bg-[#18202c] text-[#dce3ec]"
-                      >
-                        <span className="truncate">{rp.name}</span>
-                        <span className="text-[10px] font-mono-num text-[#7dd3fc]">
-                          {Math.round(rp.x)},{Math.round(rp.z)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <div className="text-[10px] text-[#94a3b8]">통합 공유 접속 링크 (PC·모바일 동일 서버)</div>
-                  <div
-                    className="px-2 py-1 rounded bg-[#0e141c] border border-white/10 text-[10px] font-mono-num text-[#93c5fd] truncate select-all"
-                    title={onGetShareUrl()}
-                  >
-                    {onGetShareUrl()}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleCopyShareLink}
-                    className="col-span-2 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-[#38f2c8] hover:bg-[#5df7d4] text-[#0b1c18] text-xs font-bold cursor-pointer"
-                  >
-                    {linkCopied ? <Check className="w-3.5 h-3.5" /> : <Link2 className="w-3.5 h-3.5" />}
-                    <span>{linkCopied ? '링크 복사됨' : '동시 접속 링크 복사'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCopyRoomCodeOnly}
-                    className="flex items-center justify-center gap-1 py-1.5 rounded-lg bg-[#1d2e3d] hover:bg-[#284054] text-[#bae6fd] text-[11px] font-semibold cursor-pointer"
-                  >
-                    {codeCopied ? <Check className="w-3 h-3 text-[#5df7d4]" /> : <Copy className="w-3 h-3" />}
-                    <span>{codeCopied ? '복사됨' : '코드 복사'}</span>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+          {/* Mobile Minimap Toggle */}
+          <button
+            type="button"
+            onClick={() => setMinimapOpen((v) => !v)}
+            title={minimapOpen ? '미니맵 숨기기' : '미니맵 열기'}
+            aria-label="미니맵 전환"
+            className={`sm:hidden flex items-center justify-center w-8 h-8 rounded-lg border transition-colors cursor-pointer ${
+              minimapOpen
+                ? 'bg-[#192c3a] border-[#62e5ff]/45 text-[#7dd3fc]'
+                : 'bg-[#141920]/90 border-white/10 text-[#aeb7c4]'
+            }`}
+          >
+            <MapIcon className="w-3.5 h-3.5" />
+          </button>
 
           <button
             type="button"
             onClick={onToggleMobileTouch}
             title={mobileTouchEnabled ? '모바일 터치 조작 패드 숨기기' : '모바일 터치 조작 패드 켜기'}
             aria-label="모바일 터치 조작 전환"
-            className={`flex items-center justify-center w-9 h-9 rounded-lg border transition-colors cursor-pointer ${
+            className={`hidden sm:flex items-center justify-center w-9 h-9 rounded-lg border transition-colors cursor-pointer ${
               mobileTouchEnabled
                 ? 'bg-[#17323a] border-[#38f2c8]/55 text-[#5df7d4]'
-                : 'bg-[#141920]/88 hover:bg-[#1f2732] border-white/10 text-[#aeb7c4]'
+                : 'bg-[#141920]/90 hover:bg-[#1f2732] border-white/10 text-[#aeb7c4]'
             }`}
           >
             <Gamepad2 className="w-4 h-4" />
@@ -1161,10 +1264,10 @@ export const GameHud: React.FC<GameHudProps> = ({
                 : '월드 및 하우징 저장하기 (Ctrl+S)'
             }
             aria-label="월드 저장하기"
-            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-9 rounded-lg bg-[#141920]/88 hover:bg-[#1f2a35] border border-[#38f2c8]/35 text-xs font-semibold text-[#7cf7dc] transition-colors cursor-pointer whitespace-nowrap"
+            className="hidden sm:flex items-center gap-1.5 px-2.5 h-9 rounded-lg bg-[#141920]/90 hover:bg-[#1f2a35] border border-[#38f2c8]/35 text-xs font-semibold text-[#7cf7dc] transition-colors cursor-pointer whitespace-nowrap"
           >
             <Save className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">
+            <span className="hidden lg:inline">
               {hud.lastSavedAt ? formatSavedTime(hud.lastSavedAt) : '저장'}
             </span>
           </button>
@@ -1177,10 +1280,10 @@ export const GameHud: React.FC<GameHudProps> = ({
                 : '낮/밤 배경음악 켜기'
             }
             aria-label={hud.bgmEnabled ? '배경음악 끄기' : '배경음악 켜기'}
-            className={`w-9 h-9 rounded-lg border flex items-center justify-center transition-colors cursor-pointer ${
+            className={`hidden md:flex w-9 h-9 rounded-lg border items-center justify-center transition-colors cursor-pointer ${
               hud.bgmEnabled && !muted
                 ? 'bg-[#192836]/92 hover:bg-[#23384b] border-[#62e5ff]/40 text-[#7dd3fc]'
-                : 'bg-[#141920]/88 hover:bg-[#1f2733] border-white/10 text-[#64748b]'
+                : 'bg-[#141920]/90 hover:bg-[#1f2733] border-white/10 text-[#64748b]'
             }`}
           >
             <Music className="w-4 h-4" />
@@ -1189,26 +1292,74 @@ export const GameHud: React.FC<GameHudProps> = ({
             type="button"
             onClick={onToggleMute}
             aria-label={muted ? '소리 켜기' : '음소거'}
-            className="w-9 h-9 rounded-lg bg-[#141920]/88 hover:bg-[#1f2733] border border-white/10 flex items-center justify-center text-[#dce3ec] transition-colors cursor-pointer"
+            className="hidden md:flex w-9 h-9 rounded-lg bg-[#141920]/90 hover:bg-[#1f2733] border border-white/10 items-center justify-center text-[#dce3ec] transition-colors cursor-pointer"
           >
             {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+          </button>
+          {/* Camera Perspective Cycle Button (F5: 3인칭 후면 → 1인칭 → 3인칭 전면) */}
+          <button
+            type="button"
+            onClick={onCycleCameraMode}
+            title="시점 전환 (F5: 3인칭 후면 · 1인칭 · 3인칭 전면)"
+            aria-label="시점 전환"
+            className={`flex items-center gap-1 px-2 h-8 sm:h-9 rounded-lg border text-[11px] sm:text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+              hud.cameraMode !== 'third_back'
+                ? 'bg-[#172c3a] border-[#38bdf8]/55 text-[#bae6fd]'
+                : 'bg-[#0d1219]/88 hover:bg-[#1b2330] border-white/12 text-[#dce3ec]'
+            }`}
+          >
+            <Camera className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline">{cameraModeShortLabel}</span>
+          </button>
+
+          {/* Desktop Fullscreen Toggle Button (F2) */}
+          <button
+            type="button"
+            onClick={onToggleFullscreen}
+            title={hud.isFullscreen ? '전체화면 종료 (F2)' : '전체화면 전환 (F2)'}
+            aria-label="전체화면 전환"
+            className={`hidden md:flex w-9 h-9 rounded-lg border items-center justify-center transition-colors cursor-pointer ${
+              hud.isFullscreen
+                ? 'bg-[#17302a] border-[#34d399]/55 text-[#6ee7b7]'
+                : 'bg-[#0d1219]/88 hover:bg-[#1b2330] border-white/12 text-[#dce3ec]'
+            }`}
+          >
+            {hud.isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            title="설정 및 최적화"
+            aria-label="설정 및 최적화"
+            className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-[#0d1219]/88 hover:bg-[#1b2330] border border-white/12 flex items-center justify-center text-[#dce3ec] transition-colors cursor-pointer"
+          >
+            <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
           <button
             type="button"
             onClick={onPause}
             aria-label="일시정지 및 저장 관리"
-            className="w-9 h-9 rounded-lg bg-[#141920]/88 hover:bg-[#1f2733] border border-white/10 flex items-center justify-center text-[#dce3ec] transition-colors cursor-pointer"
+            className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-[#0d1219]/88 hover:bg-[#1b2330] border border-white/12 flex items-center justify-center text-[#dce3ec] transition-colors cursor-pointer"
           >
-            <Pause className="w-4 h-4" />
+            <Pause className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
         </div>
 
+        {/* Optional User-Enabled FPS Readout */}
+        {showFps && typeof hud.fps === 'number' && (
+          <div className="px-2 py-0.5 rounded bg-[#11161d]/90 border border-white/10 text-[10px] font-mono-num text-[#86efac]">
+            {hud.fps} FPS
+          </div>
+        )}
+
         {/* Circular Minimap with Resource, Sapling, Land Plot & Boss Icon Layers */}
-        <div
-          className="relative rounded-full bg-[#12171e]/92 border border-white/14 overflow-hidden shadow-md"
-          style={{ width: mapSize, height: mapSize }}
-        >
-          <svg width={mapSize} height={mapSize} viewBox={`0 0 ${mapSize} ${mapSize}`}>
+        {minimapOpen && (
+          <div
+            className="relative rounded-full bg-[#12171e]/92 border border-white/14 overflow-hidden shadow-md"
+            style={{ width: mapSize, height: mapSize }}
+          >
+            <svg width={mapSize} height={mapSize} viewBox={`0 0 ${mapSize} ${mapSize}`}>
             {/* Subtle Cardinal Crosshairs & Range Rings */}
             <line x1={mapHalf} y1={10} x2={mapHalf} y2={mapSize - 10} stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
             <line x1={10} y1={mapHalf} x2={mapSize - 10} y2={mapHalf} stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
@@ -1463,62 +1614,67 @@ export const GameHud: React.FC<GameHudProps> = ({
             E
           </span>
         </div>
+        )}
 
-        {/* Minimap Layer Filter Toggle Strip (Resources / Saplings / Combat / Housing) */}
-        <div className="flex items-center gap-1 bg-[#141920]/88 px-1.5 py-1 rounded-lg border border-white/10">
-          {(
-            [
-              { key: 'resources', label: '자원', dot: '#4ade80' },
-              { key: 'saplings', label: '묘목', dot: '#a3e635' },
-              { key: 'combat', label: '몬스터', dot: '#f87171' },
-              { key: 'housing', label: '건축', dot: '#38f2c8' },
-            ] as const
-          ).map((layer) => {
-            const active = minimapLayers[layer.key];
-            return (
+        {/* Minimap Layer Filter Toggle Strip (shown when minimap is open) */}
+        {minimapOpen && (
+          <>
+            <div className="hidden sm:flex items-center gap-1 bg-[#141920]/88 px-1.5 py-1 rounded-lg border border-white/10">
+              {(
+                [
+                  { key: 'resources', label: '자원', dot: '#4ade80' },
+                  { key: 'saplings', label: '묘목', dot: '#a3e635' },
+                  { key: 'combat', label: '몬스터', dot: '#f87171' },
+                  { key: 'housing', label: '건축', dot: '#38f2c8' },
+                ] as const
+              ).map((layer) => {
+                const active = minimapLayers[layer.key];
+                return (
+                  <button
+                    key={layer.key}
+                    type="button"
+                    onClick={() =>
+                      setMinimapLayers((prev) => ({ ...prev, [layer.key]: !prev[layer.key] }))
+                    }
+                    title={`미니맵 ${layer.label} 레이어 표시/숨기기`}
+                    className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors cursor-pointer whitespace-nowrap ${
+                      active
+                        ? 'bg-[#222d3a] text-[#f7f3ea] font-semibold'
+                        : 'bg-transparent text-[#64748b] hover:text-[#94a3b8]'
+                    }`}
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ backgroundColor: active ? layer.dot : '#475569' }}
+                    />
+                    <span>{layer.label}</span>
+                  </button>
+                );
+              })}
+              <span className="text-white/15">|</span>
               <button
-                key={layer.key}
                 type="button"
-                onClick={() =>
-                  setMinimapLayers((prev) => ({ ...prev, [layer.key]: !prev[layer.key] }))
-                }
-                title={`미니맵 ${layer.label} 레이어 표시/숨기기`}
-                className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors cursor-pointer whitespace-nowrap ${
-                  active
-                    ? 'bg-[#222d3a] text-[#f7f3ea] font-semibold'
-                    : 'bg-transparent text-[#64748b] hover:text-[#94a3b8]'
+                onClick={() => setMinimapWide((v) => !v)}
+                title="미니맵 축척 전환 (근거리 / 광역 3배 필드)"
+                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  minimapWide
+                    ? 'bg-[#1d3948] text-[#7dd3fc]'
+                    : 'bg-[#222d3a] text-[#cbd5e1] hover:text-white'
                 }`}
               >
-                <span
-                  className="w-1.5 h-1.5 rounded-full shrink-0"
-                  style={{ backgroundColor: active ? layer.dot : '#475569' }}
-                />
-                <span>{layer.label}</span>
+                {minimapWide ? '광역' : '근거리'}
               </button>
-            );
-          })}
-          <span className="text-white/15">|</span>
-          <button
-            type="button"
-            onClick={() => setMinimapWide((v) => !v)}
-            title="미니맵 축척 전환 (근거리 / 광역 3배 필드)"
-            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-              minimapWide
-                ? 'bg-[#1d3948] text-[#7dd3fc]'
-                : 'bg-[#222d3a] text-[#cbd5e1] hover:text-white'
-            }`}
-          >
-            {minimapWide ? '광역' : '근거리'}
-          </button>
-        </div>
+            </div>
 
-        <div className="text-[11px] font-mono-num text-[#cbd5e1] bg-[#141920]/84 px-2 py-0.5 rounded border border-white/8">
-          X {Math.round(hud.playerX)} · Z {Math.round(hud.playerZ)}
-          {hud.rainGrowthBoost ? ' · 빗물 성장 1.8×' : ''}
-        </div>
+            <div className="text-[10px] sm:text-[11px] font-mono-num text-[#cbd5e1] bg-[#141920]/84 px-2 py-0.5 rounded border border-white/8">
+              X {Math.round(hud.playerX)} · Z {Math.round(hud.playerZ)}
+              {hud.rainGrowthBoost ? ' · 빗물 1.8×' : ''}
+            </div>
+          </>
+        )}
 
         {hud.nightCreaturesActive && (
-          <div className="text-[11px] text-[#e9d5ff] bg-[#1b1428]/90 px-2.5 py-0.5 rounded border border-[#a855f7]/45 whitespace-nowrap">
+          <div className="hidden sm:block text-[11px] text-[#e9d5ff] bg-[#1b1428]/90 px-2.5 py-0.5 rounded border border-[#a855f7]/45 whitespace-nowrap">
             야간 경보 · 언데드 선공 출몰 & 반딧불이
           </div>
         )}
@@ -1526,19 +1682,42 @@ export const GameHud: React.FC<GameHudProps> = ({
 
       {/* RIGHT-SIDE SLIDE-OUT QUEST LOG PANEL (Hotkey J) */}
       {(() => {
-        const claimableCount = hud.quests.filter((q) => q.completed && !q.claimed).length;
-        const completedCount = hud.quests.filter((q) => q.claimed || q.completed).length;
-        const sortedQuests = [...hud.quests].sort((a, b) => {
+        const mainClaimableCount = hud.quests.filter((q) => q.completed && !q.claimed).length;
+        const mainCompletedCount = hud.quests.filter((q) => q.claimed || q.completed).length;
+
+        const dailyList = hud.dailyQuests?.quests ?? [];
+        const dailyAllClearReady =
+          (hud.dailyQuests?.totalCount ?? 0) > 0 &&
+          (hud.dailyQuests?.completedCount ?? 0) >= (hud.dailyQuests?.totalCount ?? 6) &&
+          !hud.dailyQuests?.allClearClaimed;
+        const dailyClaimableCount =
+          dailyList.filter((q) => q.completed && !q.claimed).length + (dailyAllClearReady ? 1 : 0);
+        const totalClaimableCount = mainClaimableCount + dailyClaimableCount;
+
+        const sortedMainQuests = [...hud.quests].sort((a, b) => {
           const rank = (q: typeof a) => (q.completed && !q.claimed ? 0 : !q.claimed ? 1 : 2);
           return rank(a) - rank(b);
         });
+        const sortedDailyQuests = [...dailyList].sort((a, b) => {
+          const rank = (q: typeof a) => (q.completed && !q.claimed ? 0 : !q.claimed ? 1 : 2);
+          return rank(a) - rank(b);
+        });
+
+        const roomModeLabel =
+          (hud.multiplayer.roomGameMode || hud.gameMode) === 'creative' ? '크리에이티브' : '서바이벌';
 
         return (
           <div
             className="fixed right-0 z-20 flex items-start pointer-events-none transition-transform duration-200 ease-out"
             style={{
-              top: hud.nightCreaturesActive ? '296px' : '270px',
-              transform: questLogOpen ? 'translateX(0)' : 'translateX(278px)',
+              top: isCompactMobile
+                ? minimapOpen
+                  ? '172px'
+                  : '60px'
+                : hud.nightCreaturesActive
+                  ? '296px'
+                  : '270px',
+              transform: questLogOpen ? 'translateX(0)' : 'translateX(276px)',
             }}
           >
             {/* Protruding Pull-Tab */}
@@ -1546,122 +1725,327 @@ export const GameHud: React.FC<GameHudProps> = ({
               type="button"
               onClick={onToggleQuestLog}
               title="퀘스트 일지 열기/닫기 (단축키 J)"
-              className={`pointer-events-auto flex flex-col items-center gap-1.5 px-2 py-2.5 rounded-l-xl border border-r-0 shadow-lg transition-colors cursor-pointer ${
-                claimableCount > 0
+              className={`pointer-events-auto flex flex-col items-center gap-1 px-1.5 sm:px-2 py-2 sm:py-2.5 rounded-l-xl border border-r-0 shadow-lg transition-colors cursor-pointer ${
+                totalClaimableCount > 0
                   ? 'bg-[#2a2314]/95 hover:bg-[#382e18] border-[#e6b43c]/65 text-[#fde68a]'
-                  : 'bg-[#141920]/90 hover:bg-[#1e2632] border-white/12 text-[#dbe3ec]'
+                  : 'bg-[#0f141c]/85 sm:bg-[#141920]/92 hover:bg-[#1e2632] border-white/12 text-[#dbe3ec]'
               }`}
             >
               {questLogOpen ? (
                 <ChevronRight className="w-3.5 h-3.5 text-[#94a3b8]" />
               ) : (
-                <ChevronLeft className="w-3.5 h-3.5 text-[#e6b43c]" />
+                <ChevronLeft className="hidden sm:block w-3.5 h-3.5 text-[#e6b43c]" />
               )}
-              <ScrollText className="w-4 h-4" />
+              <ScrollText className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span
-                className="text-[11px] font-semibold tracking-tight"
+                className="hidden sm:inline text-[11px] font-semibold tracking-tight"
                 style={{ writingMode: 'vertical-rl' }}
               >
                 퀘스트
               </span>
-              {claimableCount > 0 ? (
-                <span className="w-5 h-5 rounded-full bg-[#e6b43c] text-[#17130d] font-mono-num text-[10px] font-bold flex items-center justify-center">
-                  {claimableCount}
+              {totalClaimableCount > 0 ? (
+                <span className="w-4 h-4 sm:w-5 sm:h-5 rounded-full bg-[#e6b43c] text-[#17130d] font-mono-num text-[10px] font-bold flex items-center justify-center tabular-nums">
+                  {totalClaimableCount}
                 </span>
               ) : (
-                <span className="text-[10px] font-mono-num text-[#94a3b8]">
-                  {completedCount}/{hud.quests.length}
+                <span className="text-[9px] sm:text-[10px] font-mono-num text-[#94a3b8] tabular-nums">
+                  {hud.dailyQuests?.completedCount ?? 0}/{hud.dailyQuests?.totalCount ?? 6}
                 </span>
               )}
             </button>
 
             {/* Slide-Out Panel Body */}
             <aside
-              className="pointer-events-auto w-[278px] rounded-bl-xl bg-[#141920]/92 border border-r-0 border-white/12 shadow-2xl flex flex-col overflow-hidden"
-              style={{ maxHeight: 'calc(100vh - 375px)' }}
+              className="pointer-events-auto w-[276px] rounded-bl-xl bg-[#141920]/95 border border-r-0 border-white/12 shadow-2xl flex flex-col overflow-hidden"
+              style={{
+                maxHeight: isCompactMobile ? 'calc(100dvh - 270px)' : 'calc(100dvh - 340px)',
+              }}
             >
-              <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-white/10 shrink-0">
-                <div className="flex items-center gap-1.5">
-                  <ScrollText className="w-4 h-4 text-[#e6b43c]" />
-                  <h3 className="text-xs font-bold text-[#f7f3ea] whitespace-nowrap">개척자 퀘스트 일지</h3>
+              {/* Header + Tab Switcher */}
+              <div className="px-3 pt-2.5 pb-2 border-b border-white/10 shrink-0 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <ScrollText className="w-4 h-4 text-[#e6b43c]" />
+                    <h3 className="text-xs font-bold text-[#f7f3ea] whitespace-nowrap">퀘스트 일지</h3>
+                  </div>
+                  <span className="text-[10px] font-mono-num text-[#94a3b8] tabular-nums">
+                    단축키 J
+                  </span>
                 </div>
-                <span className="text-[10px] font-mono-num text-[#94a3b8]">
-                  J · {completedCount}/{hud.quests.length}
-                </span>
+
+                <div className="grid grid-cols-2 gap-1 bg-[#0e131a] p-0.5 rounded-lg border border-white/8">
+                  <button
+                    type="button"
+                    onClick={() => setQuestTab('daily')}
+                    className={`flex items-center justify-center gap-1 py-1.5 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                      questTab === 'daily'
+                        ? 'bg-[#253143] text-[#fde68a]'
+                        : 'text-[#94a3b8] hover:text-[#e2e8f0]'
+                    }`}
+                  >
+                    <Calendar className="w-3 h-3" />
+                    <span>일일</span>
+                    <span className="text-[10px] font-mono-num tabular-nums opacity-85">
+                      {hud.dailyQuests?.completedCount ?? 0}/{hud.dailyQuests?.totalCount ?? 6}
+                    </span>
+                    {dailyClaimableCount > 0 && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8]" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuestTab('main')}
+                    className={`flex items-center justify-center gap-1 py-1.5 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                      questTab === 'main'
+                        ? 'bg-[#253143] text-[#fde68a]'
+                        : 'text-[#94a3b8] hover:text-[#e2e8f0]'
+                    }`}
+                  >
+                    <Award className="w-3 h-3" />
+                    <span>개척</span>
+                    <span className="text-[10px] font-mono-num tabular-nums opacity-85">
+                      {mainCompletedCount}/{hud.quests.length}
+                    </span>
+                    {mainClaimableCount > 0 && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#facc15]" />
+                    )}
+                  </button>
+                </div>
               </div>
 
-              <div className="p-2.5 space-y-2 overflow-y-auto">
-                {sortedQuests.map((q) => {
-                  const pct = Math.min(100, Math.round((q.current / Math.max(q.target, 1)) * 100));
-                  const ready = q.completed && !q.claimed;
-                  return (
-                    <div
-                      key={q.id}
-                      className={`p-2.5 rounded-lg border transition-colors ${
-                        ready
-                          ? 'bg-[#212b22] border-[#e6b43c]/60'
-                          : q.claimed
-                            ? 'bg-[#12171e]/75 border-white/6 opacity-65'
-                            : 'bg-[#1a212b]/90 border-white/10'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="text-xs font-semibold text-[#f7f3ea] leading-snug">
-                          {q.title}
-                        </div>
-                        <span
-                          className={`text-[10px] font-mono-num font-bold shrink-0 ${
-                            q.claimed
-                              ? 'text-[#86efac]'
-                              : ready
-                                ? 'text-[#fde047]'
-                                : 'text-[#93c5fd]'
-                          }`}
-                        >
-                          {q.claimed ? '완료' : `${q.current}/${q.target}`}
-                        </span>
-                      </div>
-
-                      <p className="text-[11px] text-[#94a3b8] mt-0.5 leading-snug">
-                        {q.description}
-                      </p>
-
-                      {!q.claimed && (
-                        <div className="mt-1.5 h-1.5 w-full rounded-full bg-[#242c37] overflow-hidden">
-                          <div
-                            className="h-full rounded-full transition-transform duration-150 origin-left"
-                            style={{
-                              transform: `scaleX(${pct / 100})`,
-                              backgroundColor: ready ? '#62e5ff' : '#e6b43c',
-                            }}
-                          />
-                        </div>
-                      )}
-
-                      <div className="mt-2 flex items-center justify-between gap-2">
-                        <span className="text-[10px] font-mono-num text-[#cbd5e1] truncate">
-                          보상: {q.rewardText}
-                        </span>
-                        {ready ? (
-                          <button
-                            type="button"
-                            onClick={() => onClaimQuest(q.id)}
-                            className="flex items-center gap-1 px-2.5 py-1 rounded bg-[#e6b43c] hover:bg-[#f0c455] text-[#17130d] text-[10px] font-bold transition-colors cursor-pointer shrink-0 whitespace-nowrap"
-                          >
-                            <Gift className="w-3 h-3" />
-                            <span>보상 받기</span>
-                          </button>
-                        ) : q.claimed ? (
-                          <span className="flex items-center gap-0.5 text-[10px] text-[#86efac] font-semibold shrink-0">
-                            <Check className="w-3 h-3" />
-                            <span>수령됨</span>
-                          </span>
-                        ) : null}
-                      </div>
+              {questTab === 'daily' ? (
+                <div className="p-2.5 space-y-2 overflow-y-auto">
+                  {/* Daily Reset & Multiplayer Sync Strip */}
+                  <div className="px-2.5 py-2 rounded-lg bg-[#0f141c] border border-white/8 space-y-1">
+                    <div className="flex items-center justify-between text-[10px] text-[#cbd5e1]">
+                      <span className="flex items-center gap-1 font-semibold text-[#7dd3fc]">
+                        <Clock className="w-3 h-3" />
+                        <span>매일 자정 초기화</span>
+                      </span>
+                      <span className="font-mono-num text-[#fde68a] tabular-nums">{dailyCountdown}</span>
                     </div>
-                  );
-                })}
-              </div>
+                    <div className="text-[10px] text-[#94a3b8] flex items-center justify-between gap-1">
+                      {hud.multiplayer.connected ? (
+                        <>
+                          <span className="text-[#6ee7b7] font-semibold truncate">
+                            멀티 협동 공유 · 방 {hud.multiplayer.roomId}
+                          </span>
+                          <span className="shrink-0 font-mono-num text-[#cbd5e1]">
+                            {roomModeLabel}
+                          </span>
+                        </>
+                      ) : (
+                        <span>싱글 플레이 진행 중 · 멀티 입장 시 방 협동 공유</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* All-Clear Bonus Card */}
+                  <div
+                    className={`p-2.5 rounded-lg border transition-colors ${
+                      dailyAllClearReady
+                        ? 'bg-[#242b1c] border-[#facc15]/70'
+                        : hud.dailyQuests?.allClearClaimed
+                          ? 'bg-[#12171e]/75 border-white/6 opacity-70'
+                          : 'bg-[#182130]/90 border-[#38bdf8]/25'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-xs font-bold text-[#fde68a]">
+                        <Crown className="w-3.5 h-3.5 text-[#facc15]" />
+                        <span>일일 올클리어 보너스</span>
+                      </span>
+                      <span className="text-[10px] font-mono-num font-bold text-[#7dd3fc] tabular-nums">
+                        {hud.dailyQuests?.completedCount ?? 0}/{hud.dailyQuests?.totalCount ?? 6}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 h-1.5 w-full rounded-full bg-[#242c37] overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-transform duration-150 origin-left"
+                        style={{
+                          transform: `scaleX(${Math.min(
+                            1,
+                            (hud.dailyQuests?.completedCount ?? 0) /
+                              Math.max(1, hud.dailyQuests?.totalCount ?? 6),
+                          )})`,
+                          backgroundColor: dailyAllClearReady ? '#facc15' : '#38bdf8',
+                        }}
+                      />
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-mono-num text-[#cbd5e1] truncate">
+                        +200 EXP · 수정+5 · 물약+3 · +1P
+                      </span>
+                      {dailyAllClearReady ? (
+                        <button
+                          type="button"
+                          onClick={onClaimDailyAllClear}
+                          className="flex items-center gap-1 px-2 py-1 rounded bg-[#facc15] hover:bg-[#fde047] text-[#17130d] text-[10px] font-bold transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                        >
+                          <Gift className="w-3 h-3" />
+                          <span>보너스 받기</span>
+                        </button>
+                      ) : hud.dailyQuests?.allClearClaimed ? (
+                        <span className="flex items-center gap-0.5 text-[10px] text-[#86efac] font-semibold shrink-0">
+                          <Check className="w-3 h-3" />
+                          <span>수령됨</span>
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {/* Daily Quest Cards */}
+                  {sortedDailyQuests.map((q) => {
+                    const pct = Math.min(100, Math.round((q.current / Math.max(q.target, 1)) * 100));
+                    const ready = q.completed && !q.claimed;
+                    return (
+                      <div
+                        key={q.id}
+                        className={`p-2.5 rounded-lg border transition-colors ${
+                          ready
+                            ? 'bg-[#1a2c2b] border-[#38bdf8]/65'
+                            : q.claimed
+                              ? 'bg-[#12171e]/75 border-white/6 opacity-65'
+                              : 'bg-[#1a212b]/90 border-white/10'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="text-xs font-semibold text-[#f7f3ea] leading-snug">
+                            {q.title}
+                          </div>
+                          <span
+                            className={`text-[10px] font-mono-num font-bold shrink-0 tabular-nums ${
+                              q.claimed
+                                ? 'text-[#86efac]'
+                                : ready
+                                  ? 'text-[#62e5ff]'
+                                  : 'text-[#93c5fd]'
+                            }`}
+                          >
+                            {q.claimed ? '완료' : `${q.current}/${q.target}`}
+                          </span>
+                        </div>
+
+                        <p className="text-[11px] text-[#94a3b8] mt-0.5 leading-snug">
+                          {q.description}
+                        </p>
+
+                        {q.lastContributor && hud.multiplayer.connected && (
+                          <div className="mt-1 text-[10px] text-[#6ee7b7] truncate">
+                            최근 협동 기여 · {q.lastContributor}님
+                          </div>
+                        )}
+
+                        {!q.claimed && (
+                          <div className="mt-1.5 h-1.5 w-full rounded-full bg-[#242c37] overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-transform duration-150 origin-left"
+                              style={{
+                                transform: `scaleX(${pct / 100})`,
+                                backgroundColor: ready ? '#62e5ff' : '#38bdf8',
+                              }}
+                            />
+                          </div>
+                        )}
+
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-mono-num text-[#cbd5e1] truncate">
+                            보상: {q.rewardText}
+                          </span>
+                          {ready ? (
+                            <button
+                              type="button"
+                              onClick={() => onClaimDailyQuest(q.id)}
+                              className="flex items-center gap-1 px-2.5 py-1 rounded bg-[#38bdf8] hover:bg-[#7dd3fc] text-[#0b1320] text-[10px] font-bold transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                            >
+                              <Gift className="w-3 h-3" />
+                              <span>보상 받기</span>
+                            </button>
+                          ) : q.claimed ? (
+                            <span className="flex items-center gap-0.5 text-[10px] text-[#86efac] font-semibold shrink-0">
+                              <Check className="w-3 h-3" />
+                              <span>수령됨</span>
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="p-2.5 space-y-2 overflow-y-auto">
+                  {sortedMainQuests.map((q) => {
+                    const pct = Math.min(100, Math.round((q.current / Math.max(q.target, 1)) * 100));
+                    const ready = q.completed && !q.claimed;
+                    return (
+                      <div
+                        key={q.id}
+                        className={`p-2.5 rounded-lg border transition-colors ${
+                          ready
+                            ? 'bg-[#212b22] border-[#e6b43c]/60'
+                            : q.claimed
+                              ? 'bg-[#12171e]/75 border-white/6 opacity-65'
+                              : 'bg-[#1a212b]/90 border-white/10'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="text-xs font-semibold text-[#f7f3ea] leading-snug">
+                            {q.title}
+                          </div>
+                          <span
+                            className={`text-[10px] font-mono-num font-bold shrink-0 tabular-nums ${
+                              q.claimed
+                                ? 'text-[#86efac]'
+                                : ready
+                                  ? 'text-[#fde047]'
+                                  : 'text-[#93c5fd]'
+                            }`}
+                          >
+                            {q.claimed ? '완료' : `${q.current}/${q.target}`}
+                          </span>
+                        </div>
+
+                        <p className="text-[11px] text-[#94a3b8] mt-0.5 leading-snug">
+                          {q.description}
+                        </p>
+
+                        {!q.claimed && (
+                          <div className="mt-1.5 h-1.5 w-full rounded-full bg-[#242c37] overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-transform duration-150 origin-left"
+                              style={{
+                                transform: `scaleX(${pct / 100})`,
+                                backgroundColor: ready ? '#62e5ff' : '#e6b43c',
+                              }}
+                            />
+                          </div>
+                        )}
+
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-mono-num text-[#cbd5e1] truncate">
+                            보상: {q.rewardText}
+                          </span>
+                          {ready ? (
+                            <button
+                              type="button"
+                              onClick={() => onClaimQuest(q.id)}
+                              className="flex items-center gap-1 px-2.5 py-1 rounded bg-[#e6b43c] hover:bg-[#f0c455] text-[#17130d] text-[10px] font-bold transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                            >
+                              <Gift className="w-3 h-3" />
+                              <span>보상 받기</span>
+                            </button>
+                          ) : q.claimed ? (
+                            <span className="flex items-center gap-0.5 text-[10px] text-[#86efac] font-semibold shrink-0">
+                              <Check className="w-3 h-3" />
+                              <span>수령됨</span>
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </aside>
           </div>
         );
@@ -1831,13 +2215,21 @@ export const GameHud: React.FC<GameHudProps> = ({
         <div
           className="fixed left-1/2 -translate-x-1/2 z-20 pointer-events-auto transition-all duration-150"
           style={{
-            bottom: dockCollapsed ? '52px' : hasUpperDrawer ? '276px' : '198px',
+            bottom: isCompactMobile
+              ? dockCollapsed
+                ? `calc(${isCompactScale ? 132 : 146}px + env(safe-area-inset-bottom, 0px))`
+                : `calc(${isCompactScale ? 248 : 264}px + env(safe-area-inset-bottom, 0px))`
+              : dockCollapsed
+                ? 'calc(54px + env(safe-area-inset-bottom, 0px))'
+                : hasUpperDrawer
+                  ? 'calc(278px + env(safe-area-inset-bottom, 0px))'
+                  : 'calc(200px + env(safe-area-inset-bottom, 0px))',
           }}
         >
           <button
             type="button"
             onClick={onInteract}
-            className={`flex flex-col items-center gap-1 px-4 py-2 rounded-xl bg-[#141920]/92 hover:bg-[#1c232e] border shadow-lg transition-colors cursor-pointer min-w-[216px] ${
+            className={`flex flex-col items-center gap-1 px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-[#141920]/94 hover:bg-[#1c232e] border shadow-lg transition-colors cursor-pointer min-w-[172px] sm:min-w-[216px] max-w-[82vw] ${
               hud.nearbyHint.kind === 'monster'
                 ? 'border-[#f87171]/60'
                 : hud.nearbyHint.kind === 'housing'
@@ -1845,9 +2237,9 @@ export const GameHud: React.FC<GameHudProps> = ({
                   : 'border-[#e6b43c]/45'
             }`}
           >
-            <div className="flex items-center gap-2 text-sm font-semibold text-[#f7f3ea] whitespace-nowrap">
+            <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-semibold text-[#f7f3ea] whitespace-nowrap">
               <span
-                className={`inline-flex items-center justify-center w-5 h-5 rounded font-mono-num text-xs font-bold ${
+                className={`inline-flex items-center justify-center w-5 h-5 rounded font-mono-num text-xs font-bold shrink-0 ${
                   hud.nearbyHint.kind === 'monster'
                     ? 'bg-[#ef4444] text-white'
                     : 'bg-[#e6b43c] text-[#17130d]'
@@ -1855,13 +2247,13 @@ export const GameHud: React.FC<GameHudProps> = ({
               >
                 F
               </span>
-              <span>{hud.nearbyHint.label}</span>
+              <span className="truncate max-w-[120px] sm:max-w-none">{hud.nearbyHint.label}</span>
               <span className="text-[#aeb7c4] font-normal">· {hud.nearbyHint.actionLabel}</span>
             </div>
 
             {hud.nearbyHint.detailText && (
               <div
-                className={`text-xs ${
+                className={`text-[11px] sm:text-xs truncate max-w-full ${
                   hud.nearbyHint.canAfford === false
                     ? 'text-[#fca5a5]'
                     : hud.nearbyHint.kind === 'monster'
@@ -1896,17 +2288,27 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       )}
 
-      {/* UNIFIED BOTTOM EXPOSED INVENTORY + 6-SLOT CUSTOMIZABLE HOTBAR DOCK */}
+      {/* UNIFIED BOTTOM EXPOSED INVENTORY + 6-SLOT CUSTOMIZABLE HOTBAR DOCK (Safe-Area & Mobile Overlap-Free) */}
       <div
-        className="fixed bottom-3 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-auto transition-transform duration-200"
+        className="fixed left-1/2 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-auto transition-all duration-200"
         style={{
-          transform: dockCollapsed ? 'translate(-50%, calc(100% - 26px))' : 'translate(-50%, 0)',
-          maxWidth: 'min(960px, 96vw)',
+          bottom:
+            isCompactMobile && !housingActive && !dockCollapsed
+              ? `calc(${isCompactScale ? 132 : 146}px + env(safe-area-inset-bottom, 0px))`
+              : isCompactMobile && housingActive
+                ? 'calc(6px + env(safe-area-inset-bottom, 0px))'
+                : 'calc(10px + env(safe-area-inset-bottom, 0px))',
+          maxWidth: isCompactMobile ? '95vw' : 'min(960px, 96vw)',
+          width: isCompactMobile && (!dockCollapsed || housingActive) ? '95vw' : undefined,
         }}
       >
         {/* 6-STAGE MODULAR HOUSING BUILDER & PER-PIECE EDITOR */}
-        {housingActive && !dockCollapsed && (
-          <div className="mb-1.5 w-full max-w-[940px] px-3.5 py-2.5 rounded-xl bg-[#111820]/95 border border-[#38f2c8]/45 shadow-2xl space-y-2">
+        {housingActive && (!dockCollapsed || isCompactMobile) && (
+          <div
+            className={`mb-1.5 w-full max-w-[940px] px-2.5 sm:px-3.5 py-2 sm:py-2.5 rounded-xl bg-[#111820]/96 border border-[#38f2c8]/45 shadow-2xl space-y-2 ${
+              isCompactMobile ? 'max-h-[140px] overflow-y-auto' : ''
+            }`}
+          >
             {/* Row 0: 6-Stage Progression Tabs + Validity Status + Save + Close */}
             <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-white/10">
               <div className="flex flex-wrap items-center gap-1">
@@ -2756,28 +3158,68 @@ export const GameHud: React.FC<GameHudProps> = ({
 
         {/* Hotbar Slot Configuration Picker Popover */}
         {editingSlotIndex !== null && !dockCollapsed && (
-          <div className="mb-1.5 w-full max-w-[600px] px-3.5 py-2.5 rounded-xl bg-[#141920]/96 border border-[#e6b43c]/45 shadow-2xl">
-            <div className="flex items-center justify-between mb-2">
+          <div className="mb-1.5 w-full max-w-[660px] px-3.5 py-2.5 rounded-xl bg-[#141920]/96 border border-[#e6b43c]/45 shadow-2xl">
+            <div className="flex items-center justify-between gap-2 mb-2">
               <div className="text-xs font-semibold text-[#f7f3ea]">
                 단축 슬롯 <span className="text-[#e6b43c] font-mono-num">[{editingSlotIndex + 1}]</span> 항목 지정
+                {isCreative && (
+                  <span className="ml-2 text-[11px] font-normal text-[#67e8f9]">
+                    크리에이티브 전체 아이템 · 인벤토리(I)에서도 배치 가능
+                  </span>
+                )}
               </div>
               <button
                 type="button"
                 onClick={() => setEditingSlotIndex(null)}
-                className="w-6 h-6 rounded hover:bg-white/10 flex items-center justify-center text-[#94a3b8] hover:text-white cursor-pointer"
+                className="w-6 h-6 rounded hover:bg-white/10 flex items-center justify-center text-[#94a3b8] hover:text-white cursor-pointer shrink-0"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
-            <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
-              {HOTBAR_PICKER_OPTIONS.filter((opt) => {
-                if (!opt.weaponId) return true;
-                if (hud.ownedWeapons.includes(opt.weaponId)) return true;
-                const spec = WEAPONS_CATALOG.find((w) => w.id === opt.weaponId);
-                return !spec?.classId || spec.classId === hud.playerClass;
-              }).map((opt) => {
+
+            {isCreative && (
+              <div className="flex items-center gap-1 mb-2 overflow-x-auto no-scrollbar pb-0.5">
+                {(
+                  [
+                    { id: 'all', label: '전체' },
+                    { id: 'egg', label: '몹 생성알' },
+                    { id: 'weapon', label: '무기·도구' },
+                    { id: 'armor', label: '방어구' },
+                    { id: 'food', label: '음식' },
+                    { id: 'material', label: '재료' },
+                    { id: 'action', label: '기능' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setCreativePickerCat(tab.id)}
+                    className={`px-2 py-1 rounded text-[11px] font-semibold whitespace-nowrap transition-colors cursor-pointer ${
+                      creativePickerCat === tab.id
+                        ? 'bg-[#e6b43c] text-[#17130d]'
+                        : 'bg-[#1c232e] hover:bg-[#253040] text-[#cbd5e1]'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5 max-h-[240px] overflow-y-auto pr-0.5">
+              {(isCreative
+                ? ALL_CREATIVE_HOTBAR_OPTIONS.filter(
+                    (opt) => creativePickerCat === 'all' || opt.kind === creativePickerCat,
+                  )
+                : HOTBAR_PICKER_OPTIONS.filter((opt) => {
+                    if (!opt.weaponId) return true;
+                    if (hud.ownedWeapons.includes(opt.weaponId)) return true;
+                    const spec = WEAPONS_CATALOG.find((w) => w.id === opt.weaponId);
+                    return !spec?.classId || spec.classId === hud.playerClass;
+                  })
+              ).map((opt) => {
                 const isSelected = hud.hotbarSlots[editingSlotIndex] === opt.id;
-                const isOwned = !opt.weaponId || hud.ownedWeapons.includes(opt.weaponId);
+                const isOwned = isCreative || !opt.weaponId || hud.ownedWeapons.includes(opt.weaponId);
                 return (
                   <button
                     key={opt.id}
@@ -2796,7 +3238,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                     <div className="min-w-0 flex-1">
                       <div className="text-[11px] font-semibold truncate">{opt.shortLabel}</div>
                       <div className="text-[9px] text-[#94a3b8] truncate">
-                        {opt.weaponId ? (isOwned ? '보유' : '미제련') : opt.hint}
+                        {isCreative ? opt.hint : opt.weaponId ? (isOwned ? '보유' : '미제련') : opt.hint}
                       </div>
                     </div>
                   </button>
@@ -2839,15 +3281,25 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
         )}
 
-        {/* Collapse / Expand tab */}
-        <button
-          type="button"
-          onClick={() => setDockCollapsed((v) => !v)}
-          className="mb-1 px-3 py-0.5 rounded-t-lg bg-[#141920]/88 border border-b-0 border-white/10 text-[11px] text-[#aeb7c4] hover:text-[#f7f3ea] flex items-center gap-1 cursor-pointer whitespace-nowrap"
-        >
-          {dockCollapsed ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          <span>{dockCollapsed ? '하단 인벤토리 · 단축바 열기' : '화면 넓게 보기'}</span>
-        </button>
+        {/* Collapse / Expand tab (hidden during mobile housing to maximize viewport) */}
+        {!(isCompactMobile && housingActive) && (
+          <button
+            type="button"
+            onClick={() => setDockCollapsed((v) => !v)}
+            className="mb-1 px-3 py-1 rounded-lg bg-[#141920]/92 border border-white/12 text-[11px] text-[#cbd5e1] hover:text-[#f7f3ea] flex items-center gap-1 cursor-pointer whitespace-nowrap shadow-md"
+          >
+            {dockCollapsed ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            <span>
+              {dockCollapsed
+                ? isCompactMobile
+                  ? '가방 · 단축바'
+                  : '하단 인벤토리 · 단축바 열기'
+                : isCompactMobile
+                  ? '닫기'
+                  : '화면 넓게 보기'}
+            </span>
+          </button>
+        )}
 
         {/* Main Integrated Panel: Exposed Inventory Row + 6-Slot Shortcut Bar */}
         {/* WARRIOR UNIQUE ACTIVE SKILLS STRIP (Q · E · R · T — hidden on compact mobile when touch controls show skills) */}
@@ -2977,10 +3429,81 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
         )}
 
-        <div className="flex flex-col gap-2 px-3.5 py-2 rounded-xl bg-[#141920]/92 border border-white/12 shadow-xl">
+        {!dockCollapsed && !(isCompactMobile && housingActive) && (
+        <div className="w-full flex flex-col gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 py-2 rounded-xl bg-[#0d1219]/92 border border-white/14 shadow-2xl">
+          {/* Sleek Food Picker Popover (8 collectible foods) */}
+          {foodPickerOpen && (
+            <div className="pb-2 mb-1 border-b border-white/10">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#fed7aa]">
+                  <Utensils className="w-3.5 h-3.5 text-[#fb923c]" />
+                  <span>음식 선택 및 즉시 섭취 (배고픔 {hud.hunger}/{hud.maxHunger})</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setFoodPickerOpen(false)}
+                  className="text-[#94a3b8] hover:text-white cursor-pointer"
+                  aria-label="음식 창 닫기"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                {FOOD_CATALOG.map((food) => {
+                  const cnt = hud.inventory[food.id] ?? 0;
+                  const isSelected = hud.selectedFood === food.id;
+                  return (
+                    <div
+                      key={food.id}
+                      className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg border transition-colors ${
+                        isSelected
+                          ? 'bg-[#2a1f14] border-[#fb923c]/70'
+                          : isCreative || cnt > 0
+                            ? 'bg-[#171d27] border-white/10'
+                            : 'bg-[#12161f] border-white/6 opacity-55'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onSelectFood(food.id)}
+                        className="flex items-center gap-1.5 min-w-0 text-left cursor-pointer flex-1"
+                        title={`${food.name} (${food.sourceLabel}) · 배고픔 +${food.hungerRestore}`}
+                      >
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: food.colorHex }}
+                        />
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-semibold text-[#f8fafc] truncate">
+                            {food.shortLabel}
+                          </div>
+                          <div className="text-[9px] font-mono-num text-[#94a3b8]">
+                            +{food.hungerRestore} · {isCreative ? '∞' : `${cnt}개`}
+                          </div>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!isCreative && cnt <= 0}
+                        onClick={() => onEatFood(food.id)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                          isCreative || cnt > 0
+                            ? 'bg-[#fb923c] hover:bg-[#fdba74] text-[#1a1107] cursor-pointer'
+                            : 'bg-[#1f2632] text-[#64748b] cursor-not-allowed'
+                        }`}
+                      >
+                        먹기
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Top Row: Exposed Inventory Readout + Auto-Weapon & Hotbar Config Toggles */}
-          <div className="flex flex-wrap items-center justify-between gap-3 pb-1.5 border-b border-white/10">
-            <div className="flex items-center gap-3">
+          <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-white/10 overflow-x-auto no-scrollbar">
+            <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
               <button
                 type="button"
                 onClick={() => onOpenWorkshop('inventory')}
@@ -2988,64 +3511,83 @@ export const GameHud: React.FC<GameHudProps> = ({
                 className="flex items-center gap-1 text-[11px] font-semibold text-[#94a3b8] hover:text-[#f7f3ea] transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Backpack className="w-3.5 h-3.5 text-[#7dd3fc]" />
-                <span>인벤토리</span>
+                <span>가방</span>
               </button>
 
-              <div className="flex items-center gap-1.5 whitespace-nowrap" title="원목">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <div className="flex items-center gap-1 whitespace-nowrap" title="원목">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <rect x="3" y="7" width="18" height="10" rx="4" fill="#9a6438" stroke="#e3b682" strokeWidth="1.6" />
                   <circle cx="7" cy="12" r="2.2" fill="#d9a870" />
                 </svg>
-                <span className="text-[11px] text-[#b8c0cc]">원목</span>
+                <span className="hidden sm:inline text-[11px] text-[#b8c0cc]">원목</span>
                 <span className="text-xs font-bold font-mono-num text-[#f3c37a]">{hud.inventory.wood}</span>
               </div>
 
-              <div className="flex items-center gap-1.5 whitespace-nowrap" title="석재">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <div className="flex items-center gap-1 whitespace-nowrap" title="석재">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <polygon points="12,3 20,9 18,19 6,19 4,9" fill="#8b949e" stroke="#d0d7de" strokeWidth="1.5" />
                 </svg>
-                <span className="text-[11px] text-[#b8c0cc]">석재</span>
+                <span className="hidden sm:inline text-[11px] text-[#b8c0cc]">석재</span>
                 <span className="text-xs font-bold font-mono-num text-[#e2e8f0]">{hud.inventory.stone}</span>
               </div>
 
-              <div className="flex items-center gap-1.5 whitespace-nowrap" title="철광석">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <div className="flex items-center gap-1 whitespace-nowrap" title="철광석">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <polygon points="12,3 21,12 12,21 3,12" fill="#6084a8" stroke="#bfdbfe" strokeWidth="1.5" />
                 </svg>
-                <span className="text-[11px] text-[#b8c0cc]">철광석</span>
+                <span className="hidden sm:inline text-[11px] text-[#b8c0cc]">철</span>
                 <span className="text-xs font-bold font-mono-num text-[#93c5fd]">{hud.inventory.iron}</span>
               </div>
 
-              <div className="flex items-center gap-1.5 whitespace-nowrap" title="마력 수정">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <div className="flex items-center gap-1 whitespace-nowrap" title="마력 수정">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <polygon points="12,2 18,10 15,21 9,21 6,10" fill="#22d3ee" stroke="#cffafe" strokeWidth="1.4" />
                 </svg>
-                <span className="text-[11px] text-[#b8c0cc]">수정</span>
+                <span className="hidden sm:inline text-[11px] text-[#b8c0cc]">수정</span>
                 <span className="text-xs font-bold font-mono-num text-[#67e8f9]">{hud.inventory.crystal}</span>
               </div>
 
               <span className="text-white/15">|</span>
 
-              <div className="flex items-center gap-1 whitespace-nowrap" title="몬스터 가죽">
-                <span className="w-2.5 h-2.5 rounded-sm bg-[#b87342] border border-[#eab686]" />
+              <button
+                type="button"
+                onClick={() => {
+                  setFoodPickerOpen((v) => !v);
+                  setEnvDrawerOpen(false);
+                  setEditingSlotIndex(null);
+                }}
+                title="보유 음식 선택 및 섭취 (8종)"
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap ${
+                  foodPickerOpen
+                    ? 'bg-[#2e2014] text-[#fde047] border border-[#fb923c]/60'
+                    : 'hover:bg-white/8 text-[#fed7aa]'
+                }`}
+              >
+                <Apple className="w-3.5 h-3.5 text-[#fb923c]" />
+                <span className="hidden sm:inline text-[11px]">음식</span>
+                <span className="text-xs font-bold font-mono-num text-[#fb923c]">{totalFoodCount}</span>
+              </button>
+
+              <div className="hidden md:flex items-center gap-1 whitespace-nowrap" title="몬스터 가죽">
+                <span className="w-2 h-2 rounded-sm bg-[#b87342] border border-[#eab686]" />
                 <span className="text-[11px] text-[#b8c0cc]">가죽</span>
                 <span className="text-xs font-bold font-mono-num text-[#fdba74]">{hud.inventory.leather}</span>
               </div>
 
-              <div className="flex items-center gap-1 whitespace-nowrap" title="야수 송곳니">
-                <span className="w-2.5 h-2.5 rounded-sm bg-[#e5dcc5] border border-[#fff7e6]" />
+              <div className="hidden md:flex items-center gap-1 whitespace-nowrap" title="야수 송곳니">
+                <span className="w-2 h-2 rounded-sm bg-[#e5dcc5] border border-[#fff7e6]" />
                 <span className="text-[11px] text-[#b8c0cc]">송곳니</span>
                 <span className="text-xs font-bold font-mono-num text-[#fef3c7]">{hud.inventory.fang}</span>
               </div>
 
-              <div className="flex items-center gap-1 whitespace-nowrap" title="마력 정수">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#34d399] border border-[#a7f3d0]" />
+              <div className="hidden lg:flex items-center gap-1 whitespace-nowrap" title="마력 정수">
+                <span className="w-2 h-2 rounded-full bg-[#34d399] border border-[#a7f3d0]" />
                 <span className="text-[11px] text-[#b8c0cc]">정수</span>
                 <span className="text-xs font-bold font-mono-num text-[#6ee7b7]">{hud.inventory.essence}</span>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 shrink-0">
               <button
                 type="button"
                 onClick={onToggleMastery}
@@ -3053,12 +3595,12 @@ export const GameHud: React.FC<GameHudProps> = ({
                 className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                   masteryOpen || hud.skillMasteryPoints > 0
                     ? 'bg-[#2b2313] text-[#fde047] border border-[#e6b43c]/60'
-                    : 'bg-[#222a36] hover:bg-[#2c3747] text-[#dce3ec]'
+                    : 'bg-[#1c232e] hover:bg-[#263040] text-[#dce3ec]'
                 }`}
               >
                 <Crown className="w-3 h-3 text-[#e6b43c]" />
                 <span>
-                  마스터리(K){hud.skillMasteryPoints > 0 ? ` +${hud.skillMasteryPoints}` : ''}
+                  숙련{hud.skillMasteryPoints > 0 ? ` +${hud.skillMasteryPoints}` : ''}
                 </span>
               </button>
 
@@ -3069,11 +3611,11 @@ export const GameHud: React.FC<GameHudProps> = ({
                 className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                   housingActive
                     ? 'bg-[#173634] text-[#5df7d4] border border-[#38f2c8]/65'
-                    : 'bg-[#222a36] hover:bg-[#2c3747] text-[#dce3ec]'
+                    : 'bg-[#1c232e] hover:bg-[#263040] text-[#dce3ec]'
                 }`}
               >
                 <Home className="w-3 h-3 text-[#38f2c8]" />
-                <span>하우징(H)</span>
+                <span>하우징</span>
               </button>
 
               <button
@@ -3083,21 +3625,21 @@ export const GameHud: React.FC<GameHudProps> = ({
                 className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
                   emoteWheelOpen || hud.activeEmote
                     ? 'bg-[#2b2618] text-[#fde68a] border border-[#e6b43c]/55'
-                    : 'bg-[#222a36] hover:bg-[#2c3747] text-[#dce3ec]'
+                    : 'bg-[#1c232e] hover:bg-[#263040] text-[#dce3ec]'
                 }`}
               >
                 <Smile className="w-3 h-3" />
-                <span>감정(B)</span>
+                <span>감정</span>
               </button>
 
               <button
                 type="button"
                 onClick={onToggleAutoEquip}
                 title="나무/바위/몬스터 접근 시 보유한 최적 장비로 자동 전환"
-                className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                className={`hidden sm:flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
                   hud.autoEquipTool
-                    ? 'bg-[#1b323f] text-[#67e8f9] border border-[#62e5ff]/40'
-                    : 'bg-[#222a36] text-[#94a3b8] border border-white/8'
+                    ? 'bg-[#182e3b] text-[#67e8f9] border border-[#62e5ff]/40'
+                    : 'bg-[#1c232e] text-[#94a3b8] border border-white/8'
                 }`}
               >
                 <Sparkles className="w-3 h-3" />
@@ -3110,77 +3652,111 @@ export const GameHud: React.FC<GameHudProps> = ({
                   const next = !hotbarEditMode;
                   setHotbarEditMode(next);
                   if (!next) setEditingSlotIndex(null);
-                  else setEnvDrawerOpen(false);
+                  else {
+                    setEnvDrawerOpen(false);
+                    setFoodPickerOpen(false);
+                  }
                 }}
-                title="하단 6칸 단축바 항목 변경 (슬롯 우클릭으로도 바로 설정 가능)"
+                title={`하단 ${hud.hotbarSlots.length}칸 단축바 항목 변경 (슬롯 우클릭으로도 바로 설정 가능)`}
                 className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
                   hotbarEditMode || editingSlotIndex !== null
                     ? 'bg-[#e6b43c] text-[#17130d] font-semibold'
-                    : 'bg-[#222a36] hover:bg-[#2c3747] text-[#dce3ec]'
+                    : 'bg-[#1c232e] hover:bg-[#263040] text-[#dce3ec]'
                 }`}
               >
                 <Settings2 className="w-3 h-3" />
-                <span>{hotbarEditMode ? '설정 완료' : '단축 설정'}</span>
+                <span>{hotbarEditMode ? '완료' : '슬롯'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => {
                   setEditingSlotIndex(null);
+                  setFoodPickerOpen(false);
                   setEnvDrawerOpen((v) => !v);
                 }}
-                className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                className={`hidden sm:flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
                   envDrawerOpen
                     ? 'bg-[#2a394a] text-[#62e5ff] border border-[#62e5ff]/40'
-                    : 'bg-[#222a36] hover:bg-[#2c3747] text-[#dce3ec]'
+                    : 'bg-[#1c232e] hover:bg-[#263040] text-[#dce3ec]'
                 }`}
               >
                 <SlidersHorizontal className="w-3 h-3" />
-                <span>시간 · 날씨</span>
+                <span>시간·날씨</span>
               </button>
             </div>
           </div>
 
-          {/* Bottom Row: 6-Slot Exposed Customizable Shortcut Bar (Keys 1 - 6) */}
-          <div className="flex items-center justify-center gap-1.5 sm:gap-2">
+          {/* Bottom Row: 7-Slot (Survival) or 9-Slot (Creative) Customizable Shortcut Bar */}
+          <div className="flex items-center justify-start sm:justify-center gap-1 sm:gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
             {hud.hotbarSlots.map((slotItem, idx) => {
-              const meta =
-                HOTBAR_PICKER_OPTIONS.find((o) => o.id === slotItem) || HOTBAR_PICKER_OPTIONS[0];
+              const meta = getHotbarOptionMeta(slotItem);
               const isWeapon = slotItem.startsWith('weapon:');
+              const isArmor = slotItem.startsWith('armor:');
+              const isEgg = slotItem.startsWith('egg:');
+              const isFoodSlot = slotItem === 'action:food';
               const weaponId = isWeapon ? (slotItem.slice(7) as WeaponId) : undefined;
-              const isOwned = !weaponId || hud.ownedWeapons.includes(weaponId);
-              const isEquipped = !!weaponId && hud.equippedWeapon === weaponId;
+              const armorId = isArmor ? (slotItem.slice(6) as ArmorId) : undefined;
+              const isOwned = isCreative || !weaponId || hud.ownedWeapons.includes(weaponId);
+              const isEquipped =
+                (!!weaponId && hud.equippedWeapon === weaponId) ||
+                (!!armorId && hud.equippedArmor === armorId);
               const isEditingThis = editingSlotIndex === idx;
               const badge = getSlotBadgeText(slotItem);
+              const slotDisplayLabel = isFoodSlot
+                ? selectedFoodCount > 0 || isCreative
+                  ? selectedFoodSpec.shortLabel
+                  : '음식'
+                : meta.shortLabel;
+              const wideBar = hud.hotbarSlots.length >= 9;
 
               return (
                 <button
                   key={`${idx}-${slotItem}`}
                   type="button"
                   onClick={() => handleSlotClick(idx)}
-                  onContextMenu={(e) => handleSlotRightClick(e, idx)}
-                  title={`${meta.label} (단축키 ${idx + 1} · 우클릭으로 슬롯 변경)`}
-                  className={`relative flex flex-col items-center justify-center w-[64px] sm:w-[74px] h-[54px] rounded-lg border transition-all cursor-pointer ${
+                  onContextMenu={(e) => {
+                    if (isFoodSlot && !hotbarEditMode) {
+                      e.preventDefault();
+                      setFoodPickerOpen((v) => !v);
+                      setEnvDrawerOpen(false);
+                      setEditingSlotIndex(null);
+                    } else {
+                      handleSlotRightClick(e, idx);
+                    }
+                  }}
+                  title={
+                    isFoodSlot
+                      ? `${selectedFoodSpec.name} 섭취 (단축키 ${idx + 1} · 우클릭으로 음식 종류 변경)`
+                      : `${meta.label} (단축키 ${idx + 1} · 우클릭으로 슬롯 변경)`
+                  }
+                  className={`relative shrink-0 flex flex-col items-center justify-center ${
+                    wideBar ? 'w-[50px] sm:w-[62px]' : 'w-[54px] sm:w-[70px]'
+                  } h-[48px] sm:h-[54px] rounded-lg border transition-all cursor-pointer ${
                     isEditingThis
                       ? 'bg-[#2b2618] border-[#e6b43c] shadow-[0_0_0_1px_rgba(230,180,60,0.45)]'
                       : hotbarEditMode
                         ? 'bg-[#1e2631] hover:bg-[#2a3545] border-[#e6b43c]/50 border-dashed'
                         : isEquipped
-                          ? 'bg-[#1a3140] border-[#62e5ff]/80 shadow-[inset_0_0_12px_rgba(98,229,255,0.18)]'
-                          : isOwned
-                            ? 'bg-[#1d242f] hover:bg-[#273140] border-white/12'
-                            : 'bg-[#171c24] hover:bg-[#202733] border-white/8'
+                          ? 'bg-[#18303f] border-[#62e5ff]/80 shadow-[inset_0_0_12px_rgba(98,229,255,0.18)]'
+                          : isEgg
+                            ? 'bg-[#211d15] hover:bg-[#2c2518] border-[#e6b43c]/35'
+                            : isFoodSlot && !isCreative && hungerPct <= 25 && totalFoodCount > 0
+                              ? 'bg-[#2d1e14] hover:bg-[#3a2618] border-[#fb923c]/80'
+                              : isOwned
+                                ? 'bg-[#181f2a] hover:bg-[#232d3d] border-white/12'
+                                : 'bg-[#131820] hover:bg-[#1c2330] border-white/8'
                   }`}
                 >
                   {/* Key Number Badge */}
-                  <span className="absolute top-1 left-1.5 text-[10px] font-mono-num font-bold text-[#94a3b8]">
+                  <span className="absolute top-0.5 left-1 text-[9px] sm:text-[10px] font-mono-num font-bold text-[#94a3b8]">
                     {idx + 1}
                   </span>
 
                   {/* Live Inventory / Equip / Status Readout */}
                   {badge && (
                     <span
-                      className={`absolute top-1 right-1.5 text-[9px] font-mono-num font-bold ${badge.tone}`}
+                      className={`absolute top-0.5 right-1 text-[8px] sm:text-[9px] font-mono-num font-bold ${badge.tone}`}
                     >
                       {badge.text}
                     </span>
@@ -3191,21 +3767,28 @@ export const GameHud: React.FC<GameHudProps> = ({
 
                   {/* Short Label */}
                   <span
-                    className={`mt-0.5 text-[10px] font-medium truncate max-w-[66px] ${
+                    className={`mt-0.5 text-[9px] sm:text-[10px] font-medium truncate ${
+                      wideBar ? 'max-w-[44px] sm:max-w-[56px]' : 'max-w-[48px] sm:max-w-[64px]'
+                    } ${
                       isEquipped
                         ? 'text-[#e0f8ff] font-semibold'
-                        : isOwned
-                          ? 'text-[#dce3ec]'
-                          : 'text-[#7c8798]'
+                        : isEgg
+                          ? 'text-[#fde68a]'
+                          : isFoodSlot && (totalFoodCount > 0 || isCreative)
+                            ? 'text-[#fed7aa]'
+                            : isOwned
+                              ? 'text-[#dce3ec]'
+                              : 'text-[#7c8798]'
                     }`}
                   >
-                    {meta.shortLabel}
+                    {slotDisplayLabel}
                   </span>
                 </button>
               );
             })}
           </div>
         </div>
+        )}
       </div>
     </div>
     </>

@@ -1,0 +1,128 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private player profile with custom nickname and compressed avatar data.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID matching the document ID."
+        },
+        "nickname": {
+          "type": "string",
+          "description": "Player display nickname (1-20 characters)."
+        },
+        "avatarData": {
+          "type": "string",
+          "description": "Preset path, Google photo URL, or compressed JPEG/WebP data URL."
+        },
+        "avatarKind": {
+          "type": "string",
+          "enum": ["preset", "google", "upload"],
+          "description": "Source type of the profile picture."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last profile update."
+        }
+      },
+      "required": ["uid", "nickname", "avatarData", "avatarKind", "createdAt", "updatedAt"]
+    },
+    "SavedServer": {
+      "title": "SavedServer",
+      "description": "A user-saved Minecraft-style multiplayer server entry.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Document ID matching the saved server entry."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user who saved this server."
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the server (1-32 characters)."
+        },
+        "code": {
+          "type": "string",
+          "description": "Room/server join code (1-28 alphanumeric/hyphen/underscore characters)."
+        },
+        "lastPlayedAt": {
+          "type": "number",
+          "description": "Epoch milliseconds of when the user last joined this server."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the server was added."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": ["id", "ownerId", "name", "code", "lastPlayedAt", "createdAt", "updatedAt"]
+    },
+    "PlayHistoryEntry": {
+      "title": "PlayHistoryEntry",
+      "description": "A record of a server or direct-connect room the user played in.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Document ID matching the history entry."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player."
+        },
+        "code": {
+          "type": "string",
+          "description": "Room/server join code."
+        },
+        "serverName": {
+          "type": "string",
+          "description": "Optional display name if joined from saved servers; empty for direct connect."
+        },
+        "directConnect": {
+          "type": "boolean",
+          "description": "True when joined via direct connect without saving to server list."
+        },
+        "playedAt": {
+          "type": "number",
+          "description": "Epoch milliseconds when the session was joined."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when this history record was stored."
+        }
+      },
+      "required": ["id", "ownerId", "code", "serverName", "directConnect", "playedAt", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-only user profile document containing nickname and custom avatar."
+    },
+    "/users/{userId}/servers/{serverId}": {
+      "schema": { "$ref": "#/entities/SavedServer" },
+      "description": "Owner-only subcollection of saved multiplayer servers."
+    },
+    "/users/{userId}/history/{historyId}": {
+      "schema": { "$ref": "#/entities/PlayHistoryEntry" },
+      "description": "Owner-only subcollection of multiplayer play history including direct connections."
+    }
+  }
+}

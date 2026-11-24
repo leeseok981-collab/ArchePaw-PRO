@@ -12,13 +12,26 @@ import {
   Compass,
   Hammer,
   AlertCircle,
+  Settings,
+  Globe,
+  LogOut,
+  Utensils,
 } from 'lucide-react';
 import {
+  ALL_CREATIVE_HOTBAR_OPTIONS,
   ArmorId,
   ARMORS_CATALOG,
+  FOOD_CATALOG,
+  FoodId,
   getClassSpec,
+  getHotbarOptionMeta,
+  HotbarItemId,
   HudSnapshot,
   Inventory,
+  MATERIAL_ITEMS_CATALOG,
+  MaterialItemId,
+  SPAWN_EGGS_CATALOG,
+  SpawnEggId,
   WeaponId,
   WEAPONS_CATALOG,
   WORLD_TIERS,
@@ -29,6 +42,7 @@ import { CraftItemArt } from './CraftItemArt';
 export type WorkshopTab = 'forge' | 'armor' | 'inventory' | 'expand';
 type TopSection = 'inventory' | 'craft' | 'expand' | 'guide';
 type CraftCategoryFilter = 'all' | 'tool' | 'weapon' | 'armor' | 'consumable' | 'upgrade';
+type CreativeInventoryCategory = 'all' | 'egg' | 'weapon' | 'armor' | 'food' | 'material' | 'action';
 
 interface WorkshopModalProps {
   mode: 'workshop' | 'pause';
@@ -42,6 +56,9 @@ interface WorkshopModalProps {
   onEquipArmor: (id: ArmorId) => void;
   onCraftPotion: () => void;
   onUsePotion: () => void;
+  onEatFood?: (foodId?: FoodId) => void;
+  onSetHotbarSlot?: (slotIndex: number, itemId: HotbarItemId) => void;
+  onSpawnEgg?: (eggId: SpawnEggId) => void;
   onUpgradeBoots: () => void;
   onExpandWorld: () => void;
   onSaveGame: () => void;
@@ -49,6 +66,9 @@ interface WorkshopModalProps {
   onResetWorld: () => void;
   onExportSave: () => void;
   onImportSave: (jsonText: string) => void;
+  onOpenSettings?: () => void;
+  onOpenMultiplayer?: () => void;
+  onReturnToTitle?: () => void;
 }
 
 type MaterialKey = 'wood' | 'stone' | 'iron' | 'crystal' | 'leather' | 'fang' | 'essence';
@@ -118,6 +138,9 @@ export const WorkshopModal: React.FC<WorkshopModalProps> = ({
   onEquipArmor,
   onCraftPotion,
   onUsePotion,
+  onEatFood,
+  onSetHotbarSlot,
+  onSpawnEgg,
   onUpgradeBoots,
   onExpandWorld,
   onSaveGame,
@@ -125,6 +148,9 @@ export const WorkshopModal: React.FC<WorkshopModalProps> = ({
   onResetWorld,
   onExportSave,
   onImportSave,
+  onOpenSettings,
+  onOpenMultiplayer,
+  onReturnToTitle,
 }) => {
   const [confirmReset, setConfirmReset] = useState(false);
   const [guideOverride, setGuideOverride] = useState<boolean>(mode === 'pause');
@@ -134,7 +160,87 @@ export const WorkshopModal: React.FC<WorkshopModalProps> = ({
   );
   const [craftableOnly, setCraftableOnly] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string>('');
+  const [creativeCat, setCreativeCat] = useState<CreativeInventoryCategory>('all');
+  const [creativeSearch, setCreativeSearch] = useState('');
+  const [targetSlotIndex, setTargetSlotIndex] = useState<number>(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const isCreative = hud.gameMode === 'creative';
+
+  const creativeFilteredItems = useMemo(() => {
+    const q = creativeSearch.trim().toLowerCase();
+    return ALL_CREATIVE_HOTBAR_OPTIONS.filter((opt) => {
+      if (creativeCat !== 'all' && opt.kind !== creativeCat) return false;
+      if (!q) return true;
+      return (
+        opt.label.toLowerCase().includes(q) ||
+        opt.shortLabel.toLowerCase().includes(q) ||
+        opt.hint.toLowerCase().includes(q)
+      );
+    });
+  }, [creativeCat, creativeSearch]);
+
+  const renderCreativeItemArt = (itemId: HotbarItemId, size = 34) => {
+    if (itemId.startsWith('egg:')) {
+      const eggId = itemId.slice(4) as SpawnEggId;
+      const egg = SPAWN_EGGS_CATALOG.find((e) => e.id === eggId);
+      const base = egg?.accentHex || '#cbd5e1';
+      const spot = egg?.secondaryHex || '#475569';
+      return (
+        <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true" className="shrink-0">
+          <path
+            d="M16 3.5C10.2 3.5 6.5 12.4 6.5 19.2C6.5 25.1 10.6 28.5 16 28.5C21.4 28.5 25.5 25.1 25.5 19.2C25.5 12.4 21.8 3.5 16 3.5Z"
+            fill={base}
+            stroke="#ffffff"
+            strokeOpacity="0.55"
+            strokeWidth="1.6"
+          />
+          <circle cx="12.6" cy="14.6" r="2.8" fill={spot} />
+          <circle cx="19.4" cy="19.6" r="3.2" fill={spot} />
+          <circle cx="14.2" cy="23.2" r="1.9" fill={spot} />
+          <ellipse cx="12.4" cy="9.8" rx="1.9" ry="3" fill="#ffffff" fillOpacity="0.34" />
+        </svg>
+      );
+    }
+    if (itemId.startsWith('weapon:')) {
+      return <CraftItemArt itemKey={itemId.slice(7)} size={size} />;
+    }
+    if (itemId.startsWith('armor:')) {
+      const aId = itemId.slice(6) as ArmorId;
+      const armor = ARMORS_CATALOG.find((a) => a.id === aId);
+      return <CraftItemArt itemKey={itemId} accentHex={armor?.accentHex} size={size} />;
+    }
+    if (itemId.startsWith('material:')) {
+      const mId = itemId.slice(9) as MaterialItemId;
+      return <CraftItemArt itemKey={`mat:${mId}`} size={size} />;
+    }
+    if (itemId.startsWith('food:')) {
+      const fId = itemId.slice(5) as FoodId;
+      const food = FOOD_CATALOG.find((f) => f.id === fId);
+      return (
+        <span
+          className="rounded-md flex items-center justify-center shrink-0 border border-white/15"
+          style={{ width: size, height: size, backgroundColor: `${food?.colorHex || '#fb923c'}28` }}
+        >
+          <span
+            className="w-3.5 h-3.5 rounded-full shadow-sm"
+            style={{ backgroundColor: food?.colorHex || '#fb923c' }}
+          />
+        </span>
+      );
+    }
+    if (itemId === 'action:potion') {
+      return <CraftItemArt itemKey="potion" size={size} />;
+    }
+    return (
+      <span
+        className="rounded-md flex items-center justify-center shrink-0 bg-[#232935] border border-white/10 text-[#facc15]"
+        style={{ width: size, height: size }}
+      >
+        <Sparkles className="w-4 h-4" />
+      </span>
+    );
+  };
 
   const activeSection: TopSection = guideOverride
     ? 'guide'
@@ -749,7 +855,220 @@ export const WorkshopModal: React.FC<WorkshopModalProps> = ({
         )}
 
         {/* ==================== SECTION 2: INVENTORY ("인벤토리") ==================== */}
-        {activeSection === 'inventory' && (
+        {activeSection === 'inventory' && isCreative && (
+          <div className="flex flex-col flex-1 min-h-0 bg-[#141517]">
+            {/* Top Bar: Creative Search + Category Filters */}
+            <div className="px-4 sm:px-5 pt-3.5 pb-3 border-b border-[#25282e] space-y-2.5 shrink-0">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-bold text-[#f8fafc] flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-[#67e8f9]" />
+                    <span>크리에이티브 전체 아이템 인벤토리</span>
+                    <span className="text-xs font-mono-num text-[#94a3b8]">
+                      총 {ALL_CREATIVE_HOTBAR_OPTIONS.length}종 · 몹 생성알 {SPAWN_EGGS_CATALOG.length}종
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-[#9ca3af] mt-0.5">
+                    아래 하단 9칸 바에서 슬롯을 고른 뒤 원하는 아이템을 클릭하면 즉시 배치됩니다.
+                  </p>
+                </div>
+
+                <div className="relative w-full sm:w-56">
+                  <Search className="w-3.5 h-3.5 text-[#9ca3af] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={creativeSearch}
+                    onChange={(e) => setCreativeSearch(e.target.value)}
+                    placeholder="아이템·몬스터 이름 검색..."
+                    className="w-full pl-8 pr-3 py-1.5 rounded bg-[#1c1f26] border border-[#2f343f] text-xs text-[#f8fafc] placeholder-[#6b7280] focus:outline-none focus:border-[#67e8f9]"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                {(
+                  [
+                    { id: 'all', label: `전체 (${ALL_CREATIVE_HOTBAR_OPTIONS.length})` },
+                    { id: 'egg', label: `몹 생성알 (${SPAWN_EGGS_CATALOG.length})` },
+                    { id: 'weapon', label: `무기·도구 (${WEAPONS_CATALOG.length})` },
+                    { id: 'armor', label: `방어구 (${ARMORS_CATALOG.length})` },
+                    { id: 'food', label: `음식 (${FOOD_CATALOG.length})` },
+                    { id: 'material', label: `재료 (${MATERIAL_ITEMS_CATALOG.length})` },
+                    { id: 'action', label: '기능·소모품' },
+                  ] as Array<{ id: CreativeInventoryCategory; label: string }>
+                ).map((cat) => (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setCreativeCat(cat.id)}
+                    className={`px-2.5 py-1.5 rounded text-xs font-bold whitespace-nowrap transition-colors cursor-pointer ${
+                      creativeCat === cat.id
+                        ? 'bg-[#67e8f9] text-[#091820]'
+                        : 'bg-[#1c1f26] hover:bg-[#252a34] text-[#cbd5e1] border border-[#2c313c]'
+                    }`}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Scrollable Creative Item Grid */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {creativeFilteredItems.map((opt) => {
+                  const placedSlotIdx = hud.hotbarSlots.indexOf(opt.id);
+                  const isEgg = opt.kind === 'egg' && opt.eggId;
+                  const isWeapon = opt.kind === 'weapon' && opt.weaponId;
+                  const isArmor = opt.kind === 'armor' && opt.armorId;
+                  const isFood = opt.kind === 'food' && opt.foodId;
+
+                  return (
+                    <div
+                      key={opt.id}
+                      className={`flex items-center justify-between gap-2.5 p-2.5 rounded-lg border transition-colors ${
+                        placedSlotIdx >= 0
+                          ? 'bg-[#172530] border-[#67e8f9]/55'
+                          : 'bg-[#1b1e25] hover:bg-[#222630] border-[#2c303a]'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSetHotbarSlot?.(targetSlotIndex, opt.id);
+                          setTargetSlotIndex(
+                            (prev) => (prev + 1) % Math.max(hud.hotbarSlots.length, 1),
+                          );
+                        }}
+                        title={`클릭하여 [${targetSlotIndex + 1}]번 단축 슬롯에 배치`}
+                        className="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer"
+                      >
+                        {renderCreativeItemArt(opt.id, 34)}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold text-[#f8fafc] truncate">
+                              {opt.label}
+                            </span>
+                            {placedSlotIdx >= 0 && (
+                              <span className="text-[10px] font-mono-num font-bold text-[#67e8f9] shrink-0">
+                                [{placedSlotIdx + 1}]
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-[#9ca3af] truncate">{opt.hint}</div>
+                        </div>
+                      </button>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSetHotbarSlot?.(targetSlotIndex, opt.id);
+                            setTargetSlotIndex(
+                              (prev) => (prev + 1) % Math.max(hud.hotbarSlots.length, 1),
+                            );
+                          }}
+                          className="px-2 py-1 rounded bg-[#273140] hover:bg-[#334155] text-[#facc15] text-[10px] font-bold cursor-pointer whitespace-nowrap"
+                        >
+                          슬롯 {targetSlotIndex + 1}
+                        </button>
+                        {isEgg && opt.eggId && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSpawnEgg?.(opt.eggId!);
+                              onClose();
+                            }}
+                            className="px-2 py-1 rounded bg-[#facc15] hover:bg-[#fde047] text-[#171208] text-[10px] font-extrabold cursor-pointer whitespace-nowrap"
+                          >
+                            소환
+                          </button>
+                        )}
+                        {isWeapon && opt.weaponId && (
+                          <button
+                            type="button"
+                            onClick={() => onEquipWeapon(opt.weaponId!)}
+                            className="px-2 py-1 rounded bg-[#1d3444] hover:bg-[#24445a] text-[#7dd3fc] text-[10px] font-bold cursor-pointer whitespace-nowrap"
+                          >
+                            장착
+                          </button>
+                        )}
+                        {isArmor && opt.armorId && (
+                          <button
+                            type="button"
+                            onClick={() => onEquipArmor(opt.armorId!)}
+                            className="px-2 py-1 rounded bg-[#1d3444] hover:bg-[#24445a] text-[#7dd3fc] text-[10px] font-bold cursor-pointer whitespace-nowrap"
+                          >
+                            착용
+                          </button>
+                        )}
+                        {isFood && opt.foodId && (
+                          <button
+                            type="button"
+                            onClick={() => onEatFood?.(opt.foodId!)}
+                            className="px-2 py-1 rounded bg-[#fb923c] hover:bg-[#fdba74] text-[#1a1107] text-[10px] font-bold cursor-pointer whitespace-nowrap"
+                          >
+                            먹기
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {creativeFilteredItems.length === 0 && (
+                <div className="py-12 text-center text-xs text-[#9ca3af]">
+                  검색어와 일치하는 아이템이 없습니다.
+                </div>
+              )}
+            </div>
+
+            {/* Pinned Interactive 9-Slot Bottom Hotbar Target Selector */}
+            <div className="px-4 sm:px-5 py-3 border-t border-[#262a33] bg-[#101318] shrink-0">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className="text-xs font-bold text-[#f8fafc]">
+                  하단 9칸 단축바 배치 대상:{' '}
+                  <span className="text-[#facc15] font-mono-num">[{targetSlotIndex + 1}번 슬롯]</span>
+                </span>
+                <span className="text-[11px] text-[#94a3b8]">
+                  슬롯을 선택하고 위 아이템을 클릭해 원하는 구성으로 채우세요
+                </span>
+              </div>
+              <div className="grid grid-cols-3 sm:grid-cols-9 gap-1.5">
+                {hud.hotbarSlots.map((slotItem, idx) => {
+                  const meta = getHotbarOptionMeta(slotItem);
+                  const active = targetSlotIndex === idx;
+                  return (
+                    <button
+                      key={`creative-slot-${idx}`}
+                      type="button"
+                      onClick={() => setTargetSlotIndex(idx)}
+                      className={`relative flex flex-col items-center justify-center px-1.5 py-2 rounded-lg border transition-all cursor-pointer ${
+                        active
+                          ? 'bg-[#2a2414] border-[#facc15] shadow-[0_0_0_1px_rgba(250,204,21,0.45)]'
+                          : 'bg-[#191e27] hover:bg-[#222936] border-white/10'
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-1 left-1.5 text-[10px] font-mono-num font-bold ${
+                          active ? 'text-[#facc15]' : 'text-[#94a3b8]'
+                        }`}
+                      >
+                        {idx + 1}
+                      </span>
+                      <div className="mt-1">{renderCreativeItemArt(slotItem, 24)}</div>
+                      <span className="mt-1 text-[10px] font-semibold text-[#e2e8f0] truncate max-w-full">
+                        {meta.shortLabel}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeSection === 'inventory' && !isCreative && (
           <div className="p-4 sm:p-5 space-y-5 overflow-y-auto flex-1 bg-[#141517]">
             {/* Raw Material & Loot Bag */}
             <div>
@@ -795,6 +1114,80 @@ export const WorkshopModal: React.FC<WorkshopModalProps> = ({
                     {hud.inventory.potion}
                   </span>
                 </button>
+              </div>
+            </div>
+
+            {/* Food Bag (8 Collectible Foods for Hunger & Vitality) */}
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-2.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-[3px] h-4 bg-[#fb923c] rounded-full" />
+                  <Utensils className="w-3.5 h-3.5 text-[#fb923c]" />
+                  <span className="text-xs font-bold text-[#e2e8f0]">
+                    보유 음식 · 배고픔 회복 ({FOOD_CATALOG.length}종)
+                  </span>
+                </div>
+                <span className="text-[11px] font-mono-num text-[#fdba74]">
+                  현재 포만감 {hud.hunger}/{hud.maxHunger}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                {FOOD_CATALOG.map((food) => {
+                  const count = hud.inventory[food.id] ?? 0;
+                  return (
+                    <div
+                      key={food.id}
+                      className={`flex flex-col justify-between gap-2 p-2.5 rounded border transition-colors ${
+                        count > 0
+                          ? 'bg-[#1c1f26] border-[#343a46]'
+                          : 'bg-[#17191e] border-[#252830] opacity-65'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 border border-white/15"
+                            style={{ backgroundColor: `${food.colorHex}28` }}
+                          >
+                            <span
+                              className="w-2.5 h-2.5 rounded-full"
+                              style={{ backgroundColor: food.colorHex }}
+                            />
+                          </span>
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-[#f8fafc] truncate">{food.name}</div>
+                            <div className="text-[10px] text-[#94a3b8] truncate">{food.sourceLabel}</div>
+                          </div>
+                        </div>
+                        <span
+                          className="text-sm font-extrabold font-mono-num shrink-0"
+                          style={{ color: count > 0 ? food.colorHex : '#64748b' }}
+                        >
+                          {count}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-white/6">
+                        <span className="text-[10px] font-mono-num text-[#cbd5e1]">
+                          배고픔 +{food.hungerRestore}
+                          {food.hpRestore > 0 ? ` · HP +${food.hpRestore}` : ''}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={count <= 0}
+                          onClick={() => onEatFood?.(food.id)}
+                          className={`px-2.5 py-1 rounded text-[11px] font-bold transition-colors ${
+                            count > 0
+                              ? 'bg-[#fb923c] hover:bg-[#fdba74] text-[#1a1107] cursor-pointer'
+                              : 'bg-[#232730] text-[#64748b] cursor-not-allowed'
+                          }`}
+                        >
+                          먹기
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -1030,9 +1423,9 @@ export const WorkshopModal: React.FC<WorkshopModalProps> = ({
                 </div>
               </div>
               <div className="p-3.5 rounded bg-[#1b1d22] border border-[#2a2e36]">
-                <div className="text-[11px] text-[#f97316] font-bold mb-1">모듈 하우징 건축 · 저장</div>
+                <div className="text-[11px] text-[#f97316] font-bold mb-1">시점 전환(F5) · 전체화면(F2) · 음식 생존</div>
                 <div className="text-xs text-[#e5e7eb] leading-relaxed">
-                  H 모듈 하우징 · 반벽/천장/바닥 자동 스냅 · R 90° 회전 · F 채집/공격/문 여닫기 · K 스킬 마스터리 · Ctrl+S 즉시 저장.
+                  F5 키로 3인칭 후면 → 1인칭 → 3인칭 전면 시점을 순환하고, F2 키로 전체화면을 전환합니다. 사과나무·베리덤불·당근밭·버섯군락·벌집·야자수·선인장 채집 및 사냥으로 얻은 음식을 6키로 섭취해 배고픔을 관리하세요.
                 </div>
               </div>
             </div>
@@ -1149,14 +1542,67 @@ export const WorkshopModal: React.FC<WorkshopModalProps> = ({
               <span>
                 채집 {hud.harvestedTotal}회 · 몬스터 처치 {hud.monstersDefeated}마리 · 건축 {hud.housing.placedCount}개 · 보유 방어구 {hud.ownedArmors.length}종
               </span>
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-5 py-2.5 rounded bg-[#f97316] hover:bg-[#fb923c] text-[#110c08] font-extrabold text-xs sm:text-sm transition-colors cursor-pointer whitespace-nowrap"
-              >
-                계속 플레이하기
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                {onOpenMultiplayer && (
+                  <button
+                    type="button"
+                    onClick={onOpenMultiplayer}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded bg-[#1b2938] hover:bg-[#25394e] border border-[#62e5ff]/35 text-[#bae6fd] font-bold text-xs transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    <Globe className="w-3.5 h-3.5" />
+                    <span>멀티플레이 서버</span>
+                  </button>
+                )}
+                {onOpenSettings && (
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded bg-[#222834] hover:bg-[#2d3545] border border-white/15 text-[#f8fafc] font-bold text-xs transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    <Settings className="w-3.5 h-3.5 text-[#facc15]" />
+                    <span>환경 설정 · 최적화</span>
+                  </button>
+                )}
+                {onReturnToTitle && (
+                  <button
+                    type="button"
+                    onClick={onReturnToTitle}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded bg-[#2a1d24] hover:bg-[#3b2630] border border-[#f87171]/40 text-[#fecaca] font-bold text-xs transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    <LogOut className="w-3.5 h-3.5 text-[#f87171]" />
+                    <span>메인 메뉴로 나가기</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-5 py-2.5 rounded bg-[#f97316] hover:bg-[#fb923c] text-[#110c08] font-extrabold text-xs sm:text-sm transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  계속 플레이하기
+                </button>
+              </div>
             </div>
+          </div>
+        )}
+
+        {/* Quick Pause Bar when viewing other tabs during pause */}
+        {mode === 'pause' && activeSection !== 'guide' && onReturnToTitle && (
+          <div className="shrink-0 px-4 py-2.5 bg-[#101216] border-t border-[#262a33] flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={onReturnToTitle}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#2a1d24] hover:bg-[#3b2630] border border-[#f87171]/40 text-[#fecaca] font-bold text-xs transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <LogOut className="w-3.5 h-3.5 text-[#f87171]" />
+              <span>메인 메뉴로 나가기</span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-1.5 rounded bg-[#f97316] hover:bg-[#fb923c] text-[#110c08] font-extrabold text-xs transition-colors cursor-pointer whitespace-nowrap"
+            >
+              계속 플레이하기
+            </button>
           </div>
         )}
       </div>

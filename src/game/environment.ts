@@ -182,13 +182,36 @@ interface MoonMothCreature {
   fleeOffsetZ: number;
 }
 
+interface SkyBirdAgent {
+  group: THREE.Group;
+  leftWing: THREE.Group;
+  rightWing: THREE.Group;
+  flockIdx: number;
+  offsetAlong: number;
+  offsetSide: number;
+  offsetY: number;
+  flapSpeed: number;
+  flapPhase: number;
+  scale: number;
+}
+
+interface SkyBirdFlock {
+  orbitRadiusX: number;
+  orbitRadiusZ: number;
+  altitude: number;
+  angularSpeed: number;
+  angle: number;
+  direction: 1 | -1;
+  tiltPhase: number;
+}
+
 /**
- * Dynamic 24-hour Time-of-Day, Weather, and Night-Specific Wildlife Controller.
+ * Dynamic 24-hour Time-of-Day, Weather, Sky Bird Flocks, and Night-Specific Wildlife Controller.
  * Night creatures (pulsating Firefly Swarm + articulated luminous Moon Moths)
  * appear strictly when timeOfDay is between 20:00 and 04:00.
  */
 export class WorldEnvironmentController {
-  public timeOfDay = 9.5;
+  public timeOfDay = 8.45;
   public timePaused = false;
   public weather: WeatherKind = 'clear';
   public autoWeather = true;
@@ -219,12 +242,29 @@ export class WorldEnvironmentController {
   private sunGroup: THREE.Group;
   private sunDiscMat: THREE.MeshBasicMaterial;
   private sunHaloMat: THREE.MeshBasicMaterial;
+  private sunCoronaMat: THREE.SpriteMaterial;
+  private sunRaysSprite: THREE.Sprite;
+  private sunRaysMat: THREE.SpriteMaterial;
   private moonGroup: THREE.Group;
   private moonMat: THREE.MeshBasicMaterial;
   private starsPoints: THREE.Points;
   private starsMat: THREE.PointsMaterial;
   private clouds: THREE.Group[] = [];
   private cloudMat: THREE.MeshStandardMaterial;
+
+  // Live sun/sky state cached for water & waterfall sun-reflection shaders
+  private cachedSunDir = new THREE.Vector3(0.65, 0.55, 0.36).normalize();
+  private cachedSunColor = new THREE.Color(0xfff1d6);
+  private cachedSkyHorizon = new THREE.Color(0xd9ecfa);
+  private cachedSkyZenith = new THREE.Color(0x4b93d6);
+
+  // Daytime Sky Bird Flocks & Ambient Birdsong
+  private birdContainer: THREE.Group;
+  private birdFlocks: SkyBirdFlock[] = [];
+  private birds: SkyBirdAgent[] = [];
+  private birdBodyMat: THREE.MeshStandardMaterial;
+  private birdWingMat: THREE.MeshStandardMaterial;
+  private birdChirpTimer = 3.2;
 
   // Weather VFX
   private rainLines: THREE.LineSegments;
@@ -252,6 +292,14 @@ export class WorldEnvironmentController {
   private mothWingMat: THREE.MeshStandardMaterial;
   private mothBodyMat: THREE.MeshStandardMaterial;
   private mothHaloMat: THREE.MeshBasicMaterial;
+
+  // Optimization & LOD controls
+  private particleScale = 0.6;
+  private weatherEffectsEnabled = true;
+  private viewDistanceFogBias = 0;
+  private lastSkyTimeBucket = -999;
+  private lastSkyOvercastBucket = -999;
+  private lastSkyLightning = -1;
 
   // Valley Mist & Volumetric Rolling Fog Banks
   private mistGroup: THREE.Group;
@@ -308,23 +356,190 @@ export class WorldEnvironmentController {
     this.scene.add(this.skyMesh);
     this.disposables.push(this.skyGeo, this.skyMat);
 
-    // 2. Sun & Halo
+    // 2. Radiant Sun, Atmospheric Corona & Sunburst Rays
     this.sunGroup = new THREE.Group();
-    const sunGeo = new THREE.SphereGeometry(11.5, 16, 12);
-    this.sunDiscMat = new THREE.MeshBasicMaterial({ color: 0xfff3c4, fog: false });
+    const sunGeo = new THREE.SphereGeometry(12.2, 18, 14);
+    this.sunDiscMat = new THREE.MeshBasicMaterial({ color: 0xfff8de, fog: false });
     this.sunGroup.add(new THREE.Mesh(sunGeo, this.sunDiscMat));
 
-    const haloGeo = new THREE.SphereGeometry(20.5, 16, 12);
+    const haloGeo = new THREE.SphereGeometry(21.5, 16, 12);
     this.sunHaloMat = new THREE.MeshBasicMaterial({
-      color: 0xffd27d,
+      color: 0xffd782,
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.34,
       fog: false,
       depthWrite: false,
     });
     this.sunGroup.add(new THREE.Mesh(haloGeo, this.sunHaloMat));
+
+    // Procedural radial golden corona glow sprite
+    const coronaCanvas = document.createElement('canvas');
+    coronaCanvas.width = 128;
+    coronaCanvas.height = 128;
+    const cCtx = coronaCanvas.getContext('2d')!;
+    const cGrad = cCtx.createRadialGradient(64, 64, 4, 64, 64, 62);
+    cGrad.addColorStop(0, 'rgba(255, 252, 232, 0.96)');
+    cGrad.addColorStop(0.22, 'rgba(255, 224, 142, 0.68)');
+    cGrad.addColorStop(0.55, 'rgba(255, 188, 92, 0.24)');
+    cGrad.addColorStop(1, 'rgba(255, 165, 65, 0.0)');
+    cCtx.fillStyle = cGrad;
+    cCtx.fillRect(0, 0, 128, 128);
+    const coronaTex = new THREE.CanvasTexture(coronaCanvas);
+    coronaTex.colorSpace = THREE.SRGBColorSpace;
+
+    this.sunCoronaMat = new THREE.SpriteMaterial({
+      map: coronaTex,
+      color: 0xffe8b0,
+      transparent: true,
+      opacity: 0.88,
+      fog: false,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const coronaSprite = new THREE.Sprite(this.sunCoronaMat);
+    coronaSprite.scale.set(116, 116, 1);
+    this.sunGroup.add(coronaSprite);
+
+    // Procedural delicate sunburst glare rays sprite
+    const raysCanvas = document.createElement('canvas');
+    raysCanvas.width = 128;
+    raysCanvas.height = 128;
+    const rCtx = raysCanvas.getContext('2d')!;
+    rCtx.translate(64, 64);
+    for (let r = 0; r < 12; r++) {
+      rCtx.save();
+      rCtx.rotate((r / 12) * Math.PI * 2);
+      const rg = rCtx.createLinearGradient(0, 0, 60, 0);
+      rg.addColorStop(0, 'rgba(255, 245, 200, 0.45)');
+      rg.addColorStop(0.45, 'rgba(255, 215, 130, 0.14)');
+      rg.addColorStop(1, 'rgba(255, 200, 110, 0.0)');
+      rCtx.fillStyle = rg;
+      rCtx.beginPath();
+      rCtx.moveTo(0, -3.5);
+      rCtx.lineTo(60, -0.5);
+      rCtx.lineTo(60, 0.5);
+      rCtx.lineTo(0, 3.5);
+      rCtx.closePath();
+      rCtx.fill();
+      rCtx.restore();
+    }
+    const raysTex = new THREE.CanvasTexture(raysCanvas);
+    raysTex.colorSpace = THREE.SRGBColorSpace;
+
+    this.sunRaysMat = new THREE.SpriteMaterial({
+      map: raysTex,
+      color: 0xfff0c2,
+      transparent: true,
+      opacity: 0.52,
+      fog: false,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.sunRaysSprite = new THREE.Sprite(this.sunRaysMat);
+    this.sunRaysSprite.scale.set(172, 172, 1);
+    this.sunGroup.add(this.sunRaysSprite);
+
     this.scene.add(this.sunGroup);
-    this.disposables.push(sunGeo, haloGeo, this.sunDiscMat, this.sunHaloMat);
+    this.disposables.push(
+      sunGeo,
+      haloGeo,
+      this.sunDiscMat,
+      this.sunHaloMat,
+      coronaTex,
+      this.sunCoronaMat,
+      raysTex,
+      this.sunRaysMat,
+    );
+
+    // 2b. Daytime 3D Soaring Sky Bird Flocks (새 떼)
+    this.birdContainer = new THREE.Group();
+    this.scene.add(this.birdContainer);
+
+    this.birdBodyMat = new THREE.MeshStandardMaterial({
+      color: 0xf7f5ee,
+      roughness: 0.72,
+      metalness: 0.02,
+    });
+    this.birdWingMat = new THREE.MeshStandardMaterial({
+      color: 0xd9e2ec,
+      emissive: 0x1e293b,
+      emissiveIntensity: 0.14,
+      roughness: 0.65,
+      side: THREE.DoubleSide,
+    });
+
+    const birdBodyGeo = new THREE.ConeGeometry(0.11, 0.52, 6);
+    birdBodyGeo.rotateX(Math.PI / 2);
+    const birdTailGeo = new THREE.BufferGeometry();
+    birdTailGeo.setAttribute(
+      'position',
+      new THREE.BufferAttribute(
+        new Float32Array([0, 0, -0.22, -0.16, 0.02, -0.46, 0.16, 0.02, -0.46]),
+        3,
+      ),
+    );
+    birdTailGeo.computeVertexNormals();
+
+    // Swept aerodynamic gull/dove wing silhouette
+    const birdWingShape = new THREE.Shape();
+    birdWingShape.moveTo(0, 0.09);
+    birdWingShape.quadraticCurveTo(0.32, 0.14, 0.62, 0.02);
+    birdWingShape.lineTo(0.76, -0.14);
+    birdWingShape.quadraticCurveTo(0.42, -0.12, 0.2, -0.16);
+    birdWingShape.lineTo(0, -0.1);
+    birdWingShape.closePath();
+    const birdWingGeo = new THREE.ShapeGeometry(birdWingShape);
+    birdWingGeo.rotateX(-Math.PI / 2);
+
+    this.disposables.push(this.birdBodyMat, this.birdWingMat, birdBodyGeo, birdTailGeo, birdWingGeo);
+
+    this.birdFlocks = [
+      { orbitRadiusX: 34, orbitRadiusZ: 28, altitude: 17.5, angularSpeed: 0.18, angle: 0.4, direction: 1, tiltPhase: 0.3 },
+      { orbitRadiusX: 48, orbitRadiusZ: 40, altitude: 25.5, angularSpeed: 0.135, angle: 2.5, direction: -1, tiltPhase: 1.7 },
+      { orbitRadiusX: 62, orbitRadiusZ: 54, altitude: 33.5, angularSpeed: 0.1, angle: 4.6, direction: 1, tiltPhase: 3.1 },
+    ];
+
+    for (let f = 0; f < this.birdFlocks.length; f++) {
+      const birdsPerFlock = 7;
+      for (let b = 0; b < birdsPerFlock; b++) {
+        const bGroup = new THREE.Group();
+        const body = new THREE.Mesh(birdBodyGeo, this.birdBodyMat);
+        bGroup.add(body);
+        const tail = new THREE.Mesh(birdTailGeo, this.birdWingMat);
+        bGroup.add(tail);
+
+        const leftWing = new THREE.Group();
+        const lw = new THREE.Mesh(birdWingGeo, this.birdWingMat);
+        lw.scale.x = -1;
+        leftWing.add(lw);
+        bGroup.add(leftWing);
+
+        const rightWing = new THREE.Group();
+        const rw = new THREE.Mesh(birdWingGeo, this.birdWingMat);
+        rightWing.add(rw);
+        bGroup.add(rightWing);
+
+        // V-formation staggered offsets relative to flock leader
+        const rank = Math.ceil(b / 2);
+        const sideSign = b === 0 ? 0 : b % 2 === 1 ? -1 : 1;
+        const scale = 0.88 + (f === 0 ? 0.18 : f === 1 ? 0.08 : 0.25) + (b % 3) * 0.06;
+        bGroup.scale.setScalar(scale);
+        this.birdContainer.add(bGroup);
+
+        this.birds.push({
+          group: bGroup,
+          leftWing,
+          rightWing,
+          flockIdx: f,
+          offsetAlong: -rank * 2.15 + (Math.random() - 0.5) * 0.65,
+          offsetSide: sideSign * rank * 1.85 + (Math.random() - 0.5) * 0.6,
+          offsetY: (Math.random() - 0.5) * 1.8,
+          flapSpeed: 6.2 + Math.random() * 2.0,
+          flapPhase: Math.random() * Math.PI * 2,
+          scale,
+        });
+      }
+    }
 
     // 3. Moon
     this.moonGroup = new THREE.Group();
@@ -876,6 +1091,26 @@ export class WorldEnvironmentController {
     return this.weather === 'rain' || this.weather === 'storm';
   }
 
+  public getSunDirection(target: THREE.Vector3): THREE.Vector3 {
+    return target.copy(this.cachedSunDir);
+  }
+
+  public getSunColor(target: THREE.Color): THREE.Color {
+    return target.copy(this.cachedSunColor);
+  }
+
+  public getSkyHorizonColor(target: THREE.Color): THREE.Color {
+    return target.copy(this.cachedSkyHorizon);
+  }
+
+  public getSkyZenithColor(target: THREE.Color): THREE.Color {
+    return target.copy(this.cachedSkyZenith);
+  }
+
+  public getFogDensity(): number {
+    return this.fog.density;
+  }
+
   public update(dt: number, elapsed: number, playerX: number, playerY: number, playerZ: number): void {
     if (!this.timePaused) {
       this.timeOfDay = (this.timeOfDay + dt / 24) % 24;
@@ -980,15 +1215,27 @@ export class WorldEnvironmentController {
       hemiInt += fl * 1.1;
     }
 
-    const posAttr = this.skyGeo.attributes.position;
-    const colAttr = this.skyGeo.attributes.color;
-    for (let i = 0; i < posAttr.count; i++) {
-      const y = posAttr.getY(i);
-      const t = THREE.MathUtils.clamp(y / 145, 0, 1);
-      _tmpColor.copy(_skyHorizon).lerp(_skyZenith, Math.pow(t, 0.65));
-      colAttr.setXYZ(i, _tmpColor.r, _tmpColor.g, _tmpColor.b);
+    const skyTimeBucket = Math.round(this.timeOfDay * 60);
+    const skyOvercastBucket = Math.round((overcast + this.snowBlend * 0.5) * 40);
+    const skyLightningBucket = Math.round(this.lightningFlash * 20);
+    if (
+      skyTimeBucket !== this.lastSkyTimeBucket ||
+      skyOvercastBucket !== this.lastSkyOvercastBucket ||
+      skyLightningBucket !== this.lastSkyLightning
+    ) {
+      this.lastSkyTimeBucket = skyTimeBucket;
+      this.lastSkyOvercastBucket = skyOvercastBucket;
+      this.lastSkyLightning = skyLightningBucket;
+      const posAttr = this.skyGeo.attributes.position;
+      const colAttr = this.skyGeo.attributes.color;
+      for (let i = 0; i < posAttr.count; i++) {
+        const y = posAttr.getY(i);
+        const t = THREE.MathUtils.clamp(y / 145, 0, 1);
+        _tmpColor.copy(_skyHorizon).lerp(_skyZenith, Math.pow(t, 0.65));
+        colAttr.setXYZ(i, _tmpColor.r, _tmpColor.g, _tmpColor.b);
+      }
+      colAttr.needsUpdate = true;
     }
-    colAttr.needsUpdate = true;
 
     _fogColor.copy(_skyHorizon);
     if (this.scene.background instanceof THREE.Color) {
@@ -998,7 +1245,7 @@ export class WorldEnvironmentController {
 
     this.skyMesh.position.set(playerX, 0, playerZ);
 
-    const baseFog = 0.0032 + this.nightFactor * 0.0012;
+    const baseFog = 0.0032 + this.nightFactor * 0.0012 + this.viewDistanceFogBias;
     this.fog.density =
       baseFog + this.rainBlend * 0.0038 + this.stormBlend * 0.0028 + this.fogBlend * 0.0115;
 
@@ -1013,9 +1260,16 @@ export class WorldEnvironmentController {
       sunDirY * sunRadius,
       playerZ + sunDirZ * sunRadius,
     );
-    this.sunGroup.visible = sunDirY > -0.1 && this.rainBlend < 0.75;
-    this.sunDiscMat.color.copy(_sunColor);
-    this.sunHaloMat.opacity = Math.max(0, 0.28 * (1 - overcast));
+    const sunVisFactor = THREE.MathUtils.clamp((sunDirY + 0.08) / 0.22, 0, 1) * (1 - overcast * 0.85);
+    this.sunGroup.visible = sunDirY > -0.1 && this.rainBlend < 0.78;
+    this.sunDiscMat.color.copy(_sunColor).lerp(_tmpColor.setHex(0xffffff), 0.35);
+    this.sunHaloMat.color.copy(_sunColor);
+    this.sunHaloMat.opacity = Math.max(0, 0.36 * sunVisFactor);
+    this.sunCoronaMat.color.copy(_sunColor);
+    this.sunCoronaMat.opacity = Math.max(0, 0.92 * sunVisFactor);
+    this.sunRaysMat.color.copy(_sunColor);
+    this.sunRaysMat.opacity = Math.max(0, 0.56 * sunVisFactor);
+    this.sunRaysMat.rotation = elapsed * 0.045;
 
     this.moonGroup.position.set(
       playerX - sunDirX * sunRadius,
@@ -1025,12 +1279,18 @@ export class WorldEnvironmentController {
     this.moonGroup.visible = -sunDirY > -0.1 && this.rainBlend < 0.8;
 
     const activeDirX = this.nightFactor < 0.65 ? sunDirX : -sunDirX;
-    const activeDirY = Math.max(0.28, this.nightFactor < 0.65 ? sunDirY : -sunDirY);
+    const activeDirY = Math.max(0.18, this.nightFactor < 0.65 ? sunDirY : -sunDirY);
     const activeDirZ = this.nightFactor < 0.65 ? sunDirZ : -sunDirZ;
+
+    // Cache live light/sky vectors for water sun-reflection shaders
+    this.cachedSunDir.set(activeDirX, activeDirY, activeDirZ).normalize();
+    this.cachedSunColor.copy(_sunColor);
+    this.cachedSkyHorizon.copy(_skyHorizon);
+    this.cachedSkyZenith.copy(_skyZenith);
 
     this.sunLight.position.set(
       playerX + activeDirX * 48,
-      playerY + activeDirY * 52,
+      playerY + Math.max(0.28, activeDirY) * 52,
       playerZ + activeDirZ * 48,
     );
     this.sunLight.target.position.set(playerX, playerY, playerZ);
@@ -1058,14 +1318,16 @@ export class WorldEnvironmentController {
     }
 
     // Rain Streak Field
-    if (this.rainBlend > 0.02) {
+    if (this.weatherEffectsEnabled && this.particleScale > 0 && this.rainBlend > 0.02) {
       this.rainLines.visible = true;
       this.rainMat.opacity = this.rainBlend * 0.56;
       const windX = 2.4 + this.stormBlend * 5.2;
       const streakLen = 0.65 + this.stormBlend * 0.45;
       const posArr = this.rainPositions;
+      const activeRain = Math.max(40, Math.floor(this.rainCount * this.particleScale));
+      this.rainLines.geometry.setDrawRange(0, activeRain * 2);
 
-      for (let i = 0; i < this.rainCount; i++) {
+      for (let i = 0; i < activeRain; i++) {
         const idx = i * 6;
         let x = posArr[idx] + windX * dt;
         let y = posArr[idx + 1] - this.rainSpeeds[i] * (0.85 + this.stormBlend * 0.45) * dt;
@@ -1095,11 +1357,13 @@ export class WorldEnvironmentController {
     }
 
     // Falling 3D Snowflake Field
-    if (this.snowBlend > 0.02) {
+    if (this.weatherEffectsEnabled && this.particleScale > 0 && this.snowBlend > 0.02) {
       this.snowPoints.visible = true;
       this.snowMat.opacity = this.snowBlend * 0.88;
       const sArr = this.snowPositions;
-      for (let i = 0; i < this.snowCount; i++) {
+      const activeSnow = Math.max(40, Math.floor(this.snowCount * this.particleScale));
+      this.snowPoints.geometry.setDrawRange(0, activeSnow);
+      for (let i = 0; i < activeSnow; i++) {
         const idx = i * 3;
         const phase = this.snowPhases[i];
         let x = sArr[idx] + Math.sin(elapsed * 0.9 + phase) * 0.95 * dt + 0.35 * dt;
@@ -1128,7 +1392,7 @@ export class WorldEnvironmentController {
 
     // STRICT 20:00 - 04:00 NIGHT-SPECIFIC WILDLIFE (Firefly Swarm + Moon Moths)
     const nightBioVis = this.getNightCreatureVisibility() * (1 - this.stormBlend * 0.85);
-    if (nightBioVis > 0.01) {
+    if (this.particleScale > 0 && nightBioVis > 0.01) {
       // 1) Pulsating Firefly Swarm
       this.fireflyPoints.visible = true;
       this.fireflyMat.opacity = nightBioVis * 0.92;
@@ -1217,19 +1481,26 @@ export class WorldEnvironmentController {
       dawnMist,
       0.1,
     );
-    if (ambientMist > 0.02) {
+    if (this.weatherEffectsEnabled && this.particleScale >= 0.35 && ambientMist > 0.02) {
       this.mistGroup.visible = true;
       this.mistMat.color.copy(_fogColor).lerp(_tmpColor.setHex(0xffffff), 0.35);
       this.fogBankMat.color.copy(_fogColor).lerp(_tmpColor.setHex(0xeef6ff), 0.28);
       this.mistMat.opacity = THREE.MathUtils.clamp(ambientMist * 0.62, 0.06, 0.68);
       this.fogBankMat.opacity = THREE.MathUtils.clamp(ambientMist * 0.44, 0.04, 0.46);
 
+      const mistLimit = Math.ceil(this.mistPlanes.length * this.particleScale);
       for (let i = 0; i < this.mistPlanes.length; i++) {
         const mp = this.mistPlanes[i];
-        mp.rotation.z += dt * (i % 2 === 0 ? 0.09 : -0.07);
+        mp.visible = i < mistLimit;
+        if (mp.visible) {
+          mp.rotation.z += dt * (i % 2 === 0 ? 0.09 : -0.07);
+        }
       }
+      const bankLimit = Math.ceil(this.fogBanks.length * this.particleScale);
       for (let i = 0; i < this.fogBanks.length; i++) {
         const fb = this.fogBanks[i];
+        fb.mesh.visible = i < bankLimit;
+        if (!fb.mesh.visible) continue;
         const driftX = fb.baseX + Math.sin(elapsed * 0.14 * fb.speed + fb.phase) * 7.5;
         const driftZ = fb.baseZ + Math.cos(elapsed * 0.12 * fb.speed + fb.phase) * 6.0;
         fb.mesh.position.set(
@@ -1237,7 +1508,6 @@ export class WorldEnvironmentController {
           getTerrainHeight(driftX, driftZ) + fb.yOffset + Math.sin(elapsed * 0.5 + fb.phase) * 0.35,
           driftZ,
         );
-        // Face softly toward player so fog layers always look volumetric
         fb.mesh.lookAt(playerX, fb.mesh.position.y, playerZ);
       }
     } else {
@@ -1253,84 +1523,192 @@ export class WorldEnvironmentController {
       this.stormBlend * 0.88;
     this.windStrength = baseWind * (0.72 + gustWave * 0.58);
 
-    const activeLeafRatio = THREE.MathUtils.clamp(
-      0.28 + this.rainBlend * 0.52 + this.stormBlend * 0.28 - this.fogBlend * 0.12,
-      0.16,
-      1.0,
-    );
-    const activeLeafCount = Math.floor(this.leafCount * activeLeafRatio);
     const windVelX = 1.4 + this.windStrength * 6.8;
     const windVelZ = 0.45 + this.windStrength * 2.1;
 
-    for (let i = 0; i < this.leafCount; i++) {
-      const lf = this.leaves[i];
-      if (i >= activeLeafCount) {
-        _leafDummy.position.set(0, -100, 0);
-        _leafDummy.scale.setScalar(0);
+    if (this.weatherEffectsEnabled && this.particleScale > 0.05) {
+      this.leafMesh.visible = true;
+      const activeLeafRatio = THREE.MathUtils.clamp(
+        0.28 + this.rainBlend * 0.52 + this.stormBlend * 0.28 - this.fogBlend * 0.12,
+        0.16,
+        1.0,
+      );
+      const activeLeafCount = Math.floor(this.leafCount * activeLeafRatio * this.particleScale);
+      this.leafMesh.count = activeLeafCount;
+
+      for (let i = 0; i < activeLeafCount; i++) {
+        const lf = this.leaves[i];
+        const flutter = Math.sin(elapsed * lf.flutterFreq + lf.phase);
+        const swirl = Math.cos(elapsed * (lf.flutterFreq * 0.72) + lf.phase);
+        lf.x += (windVelX + flutter * lf.flutterAmp) * dt;
+        lf.z += (windVelZ + swirl * lf.flutterAmp) * dt;
+        lf.y -= lf.fallSpeed * (0.82 + this.rainBlend * 0.48 + this.stormBlend * 0.35) * dt;
+        lf.y += Math.sin(elapsed * lf.flutterFreq * 1.4 + lf.phase) * 0.22 * dt;
+
+        const groundAtLeaf = getTerrainHeight(lf.x, lf.z);
+        if (lf.y < groundAtLeaf + 0.18 || Math.abs(lf.x - playerX) > 24 || Math.abs(lf.z - playerZ) > 24) {
+          lf.x = playerX - windVelX * 1.4 + (Math.random() - 0.5) * 42;
+          lf.z = playerZ - windVelZ * 1.1 + (Math.random() - 0.5) * 42;
+          lf.y = Math.max(playerY, getTerrainHeight(lf.x, lf.z)) + 4.5 + Math.random() * 11;
+        }
+
+        const spinBoost = 1 + this.windStrength * 1.9;
+        lf.rotX += lf.spinX * spinBoost * dt;
+        lf.rotY += lf.spinY * spinBoost * dt;
+        lf.rotZ += lf.spinZ * spinBoost * dt;
+
+        _leafDummy.position.set(lf.x, lf.y, lf.z);
+        _leafDummy.rotation.set(lf.rotX, lf.rotY, lf.rotZ);
+        _leafDummy.scale.setScalar(lf.baseScale);
         _leafDummy.updateMatrix();
         this.leafMesh.setMatrixAt(i, _leafDummy.matrix);
-        continue;
       }
-
-      const flutter = Math.sin(elapsed * lf.flutterFreq + lf.phase);
-      const swirl = Math.cos(elapsed * (lf.flutterFreq * 0.72) + lf.phase);
-      lf.x += (windVelX + flutter * lf.flutterAmp) * dt;
-      lf.z += (windVelZ + swirl * lf.flutterAmp) * dt;
-      lf.y -= lf.fallSpeed * (0.82 + this.rainBlend * 0.48 + this.stormBlend * 0.35) * dt;
-      lf.y += Math.sin(elapsed * lf.flutterFreq * 1.4 + lf.phase) * 0.22 * dt;
-
-      const groundAtLeaf = getTerrainHeight(lf.x, lf.z);
-      if (lf.y < groundAtLeaf + 0.18 || Math.abs(lf.x - playerX) > 24 || Math.abs(lf.z - playerZ) > 24) {
-        lf.x = playerX - windVelX * 1.4 + (Math.random() - 0.5) * 42;
-        lf.z = playerZ - windVelZ * 1.1 + (Math.random() - 0.5) * 42;
-        lf.y = Math.max(playerY, getTerrainHeight(lf.x, lf.z)) + 4.5 + Math.random() * 11;
+      if (activeLeafCount > 0) {
+        this.leafMesh.instanceMatrix.needsUpdate = true;
       }
-
-      const spinBoost = 1 + this.windStrength * 1.9;
-      lf.rotX += lf.spinX * spinBoost * dt;
-      lf.rotY += lf.spinY * spinBoost * dt;
-      lf.rotZ += lf.spinZ * spinBoost * dt;
-
-      _leafDummy.position.set(lf.x, lf.y, lf.z);
-      _leafDummy.rotation.set(lf.rotX, lf.rotY, lf.rotZ);
-      _leafDummy.scale.setScalar(lf.baseScale);
-      _leafDummy.updateMatrix();
-      this.leafMesh.setMatrixAt(i, _leafDummy.matrix);
+    } else {
+      this.leafMesh.visible = false;
     }
-    this.leafMesh.instanceMatrix.needsUpdate = true;
 
-    // Translucent Breeze Wind-Current Ribbons (intensify noticeably in rain/storm gusts)
-    const ribbonVisScale = THREE.MathUtils.clamp(
-      0.16 + this.rainBlend * 0.34 + this.stormBlend * 0.36 - this.fogBlend * 0.08,
-      0.08,
-      0.62,
-    );
-    const windHeading = Math.atan2(windVelZ, windVelX);
-    for (let i = 0; i < this.breezeRibbons.length; i++) {
-      const rb = this.breezeRibbons[i];
-      rb.life += dt * (0.85 + this.windStrength * 0.9);
-      if (rb.life >= rb.maxLife) {
-        rb.life = 0;
-        rb.x = playerX - windVelX * 1.2 + (Math.random() - 0.5) * 34;
-        rb.z = playerZ - windVelZ * 0.9 + (Math.random() - 0.5) * 34;
-        rb.y = getTerrainHeight(rb.x, rb.z) + 1.1 + Math.random() * 6.2;
-      }
-      const moveFactor = (rb.speed * (0.45 + this.windStrength * 1.15)) * dt;
-      rb.x += Math.cos(windHeading) * moveFactor;
-      rb.z += Math.sin(windHeading) * moveFactor;
-      rb.y += Math.sin(elapsed * 2.4 + rb.phase) * 0.25 * dt;
+    // Translucent Breeze Wind-Current Ribbons
+    if (this.weatherEffectsEnabled && this.particleScale >= 0.35) {
+      const ribbonVisScale = THREE.MathUtils.clamp(
+        0.16 + this.rainBlend * 0.34 + this.stormBlend * 0.36 - this.fogBlend * 0.08,
+        0.08,
+        0.62,
+      );
+      const windHeading = Math.atan2(windVelZ, windVelX);
+      const maxRibbons = Math.ceil(
+        this.breezeRibbons.length * (0.35 + this.rainBlend * 0.45 + this.stormBlend * 0.2) * this.particleScale,
+      );
+      for (let i = 0; i < this.breezeRibbons.length; i++) {
+        const rb = this.breezeRibbons[i];
+        if (i >= maxRibbons) {
+          rb.mesh.visible = false;
+          continue;
+        }
+        rb.life += dt * (0.85 + this.windStrength * 0.9);
+        if (rb.life >= rb.maxLife) {
+          rb.life = 0;
+          rb.x = playerX - windVelX * 1.2 + (Math.random() - 0.5) * 34;
+          rb.z = playerZ - windVelZ * 0.9 + (Math.random() - 0.5) * 34;
+          rb.y = getTerrainHeight(rb.x, rb.z) + 1.1 + Math.random() * 6.2;
+        }
+        const moveFactor = rb.speed * (0.45 + this.windStrength * 1.15) * dt;
+        rb.x += Math.cos(windHeading) * moveFactor;
+        rb.z += Math.sin(windHeading) * moveFactor;
+        rb.y += Math.sin(elapsed * 2.4 + rb.phase) * 0.25 * dt;
 
-      const lifeFrac = rb.life / rb.maxLife;
-      const fade = Math.sin(lifeFrac * Math.PI);
-      const activeRibbon = i < Math.ceil(this.breezeRibbons.length * (0.35 + this.rainBlend * 0.45 + this.stormBlend * 0.2));
-      rb.mesh.visible = activeRibbon && fade > 0.02;
-      if (rb.mesh.visible) {
-        rb.mesh.position.set(rb.x, rb.y, rb.z);
-        rb.mesh.rotation.set(0, -windHeading, Math.sin(elapsed * 2.0 + rb.phase) * 0.08);
-        const stretch = 0.75 + this.windStrength * 0.85;
-        rb.mesh.scale.set(stretch, 1, 1);
-        rb.mat.opacity = fade * ribbonVisScale * (1 - this.nightFactor * 0.35);
+        const lifeFrac = rb.life / rb.maxLife;
+        const fade = Math.sin(lifeFrac * Math.PI);
+        rb.mesh.visible = fade > 0.02;
+        if (rb.mesh.visible) {
+          rb.mesh.position.set(rb.x, rb.y, rb.z);
+          rb.mesh.rotation.set(0, -windHeading, Math.sin(elapsed * 2.0 + rb.phase) * 0.08);
+          const stretch = 0.75 + this.windStrength * 0.85;
+          rb.mesh.scale.set(stretch, 1, 1);
+          rb.mat.opacity = fade * ribbonVisScale * (1 - this.nightFactor * 0.35);
+        }
       }
+    } else {
+      for (let i = 0; i < this.breezeRibbons.length; i++) {
+        this.breezeRibbons[i].mesh.visible = false;
+      }
+    }
+
+    // Daytime 3D Soaring Sky Bird Flocks + Natural Birdsong Ambience
+    const birdDayVis = this.nightFactor < 0.58 && this.stormBlend < 0.45 && this.rainBlend < 0.55;
+    if (birdDayVis) {
+      this.birdContainer.visible = true;
+      const maxActiveBirds = Math.max(7, Math.round(this.birds.length * Math.max(0.45, this.particleScale)));
+
+      for (let f = 0; f < this.birdFlocks.length; f++) {
+        const fl = this.birdFlocks[f];
+        fl.angle += fl.angularSpeed * fl.direction * dt;
+      }
+
+      for (let i = 0; i < this.birds.length; i++) {
+        const b = this.birds[i];
+        if (i >= maxActiveBirds) {
+          b.group.visible = false;
+          continue;
+        }
+        b.group.visible = true;
+        const fl = this.birdFlocks[b.flockIdx];
+        const a = fl.angle;
+        const cosA = Math.cos(a);
+        const sinA = Math.sin(a);
+
+        // Flock leader position orbiting gently above player / scenic focal point
+        const leadX = playerX + cosA * fl.orbitRadiusX;
+        const leadZ = playerZ + sinA * fl.orbitRadiusZ;
+        const leadY =
+          Math.max(playerY, 0) +
+          fl.altitude +
+          Math.sin(elapsed * 0.42 + fl.tiltPhase) * 2.4;
+
+        // Tangent flight direction
+        const tx = -sinA * fl.orbitRadiusX * fl.direction;
+        const tz = cosA * fl.orbitRadiusZ * fl.direction;
+        const tLen = Math.hypot(tx, tz) || 1;
+        const fx = tx / tLen;
+        const fz = tz / tLen;
+        // Perpendicular right vector
+        const rx = -fz;
+        const rz = fx;
+
+        const bx = leadX + fx * b.offsetAlong + rx * b.offsetSide;
+        const bz = leadZ + fz * b.offsetAlong + rz * b.offsetSide;
+        const by = leadY + b.offsetY + Math.sin(elapsed * 1.45 + b.flapPhase) * 0.48;
+
+        b.group.position.set(bx, by, bz);
+        // Face forward along flight tangent (+Z is nose) and bank gracefully into the turn
+        b.group.rotation.set(
+          Math.sin(elapsed * 0.8 + b.flapPhase) * 0.08,
+          Math.atan2(fx, fz),
+          -fl.direction * 0.24,
+        );
+
+        // Natural alternating flap-burst + calm soar-glide wing cycle
+        const glideEnvelope = Math.sin(elapsed * 0.85 + b.flapPhase * 0.7);
+        const flapAmp = glideEnvelope > -0.18 ? 0.58 : 0.1;
+        const wingAngle = Math.sin(elapsed * b.flapSpeed + b.flapPhase) * flapAmp + 0.08;
+        b.leftWing.rotation.z = -wingAngle;
+        b.rightWing.rotation.z = wingAngle;
+      }
+
+      // Randomized soft daytime birdsong ambience
+      this.birdChirpTimer -= dt;
+      if (this.birdChirpTimer <= 0) {
+        this.birdChirpTimer = 3.8 + Math.random() * 5.6;
+        const clarity = 1 - Math.max(this.rainBlend, this.fogBlend * 0.5);
+        if (clarity > 0.35) {
+          this.sound.playBirdChirp(clarity * (0.75 + Math.random() * 0.35));
+        }
+      }
+    } else {
+      this.birdContainer.visible = false;
+    }
+  }
+
+  public applyOptimization(opts: {
+    particleScale: number;
+    weatherEffects: boolean;
+    viewDistance: 'near' | 'medium' | 'far';
+  }): void {
+    this.particleScale = THREE.MathUtils.clamp(opts.particleScale, 0, 1);
+    this.weatherEffectsEnabled = opts.weatherEffects;
+    this.viewDistanceFogBias =
+      opts.viewDistance === 'near' ? 0.0042 : opts.viewDistance === 'medium' ? 0.0014 : 0;
+
+    const visibleClouds =
+      opts.viewDistance === 'near'
+        ? Math.ceil(this.clouds.length * 0.45)
+        : opts.viewDistance === 'medium'
+          ? Math.ceil(this.clouds.length * 0.75)
+          : this.clouds.length;
+    for (let i = 0; i < this.clouds.length; i++) {
+      this.clouds[i].visible = i < visibleClouds;
     }
   }
 

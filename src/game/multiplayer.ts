@@ -1,13 +1,29 @@
-import { ArmorId, EmoteId, PlayerClassId, WeaponId } from './types';
+import {
+  ArmorId,
+  DailyQuestId,
+  EmoteId,
+  GameMode,
+  PlayerClassId,
+  SharedSpawnedMonsterPayload,
+  SpawnEggId,
+  WeaponId,
+} from './types';
 import { SavedHousingItem, SavedLandPlot } from './saveSystem';
 
 export type SharedHousingPayload = SavedHousingItem;
 export type SharedPlotPayload = SavedLandPlot;
 
+export interface RoomDailyQuestPayload {
+  dateKey: string;
+  progress: Partial<Record<DailyQuestId, number>>;
+  contributors: Partial<Record<DailyQuestId, string>>;
+}
+
 export interface RemotePlayerPayload {
   id: string;
   name: string;
   playerClass?: PlayerClassId;
+  gameMode?: GameMode;
   x: number;
   y: number;
   z: number;
@@ -35,10 +51,13 @@ export interface MultiplayerCallbacks {
   onInitRoom: (payload: {
     playerId: string;
     roomId: string;
+    roomGameMode: GameMode;
     playerName: string;
     players: RemotePlayerPayload[];
     housing: SavedHousingItem[];
     plots: SavedLandPlot[];
+    dailyQuests?: RoomDailyQuestPayload;
+    spawnedMonsters?: SharedSpawnedMonsterPayload[];
   }) => void;
   onPlayerJoin: (player: RemotePlayerPayload) => void;
   onPlayerState: (player: RemotePlayerPayload) => void;
@@ -47,6 +66,14 @@ export interface MultiplayerCallbacks {
   onHousingDelete: (id: string, destroyed?: boolean) => void;
   onHousingDamage: (id: string, durability: number) => void;
   onPlotClaim: (plot: SavedLandPlot) => void;
+  onDailyQuestState?: (daily: RoomDailyQuestPayload) => void;
+  onRemoteSpawnEgg?: (monster: SharedSpawnedMonsterPayload) => void;
+  onRoomModeChange?: (gameMode: GameMode) => void;
+  onPlayerEvent?: (event: {
+    kind: 'eat_food' | 'daily_complete' | 'boss_defeat';
+    label: string;
+    playerName: string;
+  }) => void;
 }
 
 const NAME_STORAGE_KEY = 'archepaw_player_name_v1';
@@ -111,14 +138,17 @@ export class MultiplayerClient {
   private httpPollTimer: number | null = null;
   private reconnectDelayMs = 1200;
   private disposed = false;
+  private offlineMode = false;
   private connected = false;
   private transport: MultiplayerTransport = 'offline';
   private activeOrigin: string;
   private triedCanonical = false;
 
   public roomId: string;
+  public roomGameMode: GameMode = 'survival';
   public playerId: string | null = null;
   public playerName: string;
+  private preferredMode: GameMode | null = null;
   private shareBaseUrl: string | null = null;
   private callbacks: MultiplayerCallbacks;
 
@@ -129,13 +159,40 @@ export class MultiplayerClient {
   private knownHttpPlayerIds = new Set<string>();
   private knownHttpHousingSigs = new Map<string, string>();
   private knownHttpPlotIds = new Set<string>();
+  private knownHttpSpawnIds = new Set<string>();
+  private lastHttpDailySig = '';
 
   constructor(callbacks: MultiplayerCallbacks) {
     this.callbacks = callbacks;
     this.roomId = resolveRoomIdFromUrl();
     this.playerName = loadOrCreatePlayerName();
     this.activeOrigin = normalizeShareOrigin(window.location.origin);
-    this.fetchShareBaseUrl();
+    this.offlineMode = typeof navigator !== 'undefined' && !navigator.onLine;
+    if (!this.offlineMode) {
+      this.fetchShareBaseUrl();
+    }
+  }
+
+  public setOfflineMode(offline: boolean): void {
+    if (this.offlineMode === offline) return;
+    this.offlineMode = offline;
+    if (offline) {
+      this.cleanupTransports();
+      this.connected = false;
+      this.transport = 'offline';
+      this.emitStatus();
+    } else if (!this.disposed) {
+      this.reconnectDelayMs = 1200;
+      this.fetchShareBaseUrl();
+      this.connect();
+    }
+  }
+
+  public disconnect(): void {
+    this.cleanupTransports();
+    this.connected = false;
+    this.transport = 'offline';
+    this.emitStatus();
   }
 
   private fetchShareBaseUrl(): void {
@@ -172,19 +229,27 @@ export class MultiplayerClient {
 
   public connect(): void {
     if (this.disposed) return;
+    if (this.offlineMode || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      this.cleanupTransports();
+      this.connected = false;
+      this.transport = 'offline';
+      this.emitStatus();
+      return;
+    }
     this.cleanupTransports();
 
     const targetOrigin = this.getCandidateOrigin();
     this.activeOrigin = targetOrigin;
 
     let wsUrl: string;
+    const modeQuery = this.preferredMode ? `&mode=${encodeURIComponent(this.preferredMode)}` : '';
     try {
       const u = new URL(targetOrigin);
       const wsProto = u.protocol === 'https:' ? 'wss:' : 'ws:';
-      wsUrl = `${wsProto}//${u.host}/ws?room=${encodeURIComponent(this.roomId)}&name=${encodeURIComponent(this.playerName)}`;
+      wsUrl = `${wsProto}//${u.host}/ws?room=${encodeURIComponent(this.roomId)}&name=${encodeURIComponent(this.playerName)}${modeQuery}`;
     } catch {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      wsUrl = `${proto}//${window.location.host}/ws?room=${encodeURIComponent(this.roomId)}&name=${encodeURIComponent(this.playerName)}`;
+      wsUrl = `${proto}//${window.location.host}/ws?room=${encodeURIComponent(this.roomId)}&name=${encodeURIComponent(this.playerName)}${modeQuery}`;
     }
 
     let opened = false;
@@ -234,6 +299,9 @@ export class MultiplayerClient {
           case 'init': {
             this.playerId = typeof msg.playerId === 'string' ? msg.playerId : null;
             if (typeof msg.roomId === 'string') this.roomId = msg.roomId;
+            if (msg.roomGameMode === 'creative' || msg.roomGameMode === 'survival') {
+              this.roomGameMode = msg.roomGameMode;
+            }
             if (typeof msg.playerName === 'string') this.playerName = msg.playerName;
             if (typeof msg.shareBaseUrl === 'string' && msg.shareBaseUrl.length > 0) {
               this.shareBaseUrl = normalizeShareOrigin(msg.shareBaseUrl);
@@ -242,10 +310,18 @@ export class MultiplayerClient {
             this.callbacks.onInitRoom({
               playerId: this.playerId || '',
               roomId: this.roomId,
+              roomGameMode: this.roomGameMode,
               playerName: this.playerName,
               players: Array.isArray(msg.players) ? (msg.players as RemotePlayerPayload[]) : [],
               housing: Array.isArray(msg.housing) ? (msg.housing as SavedHousingItem[]) : [],
               plots: Array.isArray(msg.plots) ? (msg.plots as SavedLandPlot[]) : [],
+              dailyQuests:
+                msg.dailyQuests && typeof msg.dailyQuests === 'object'
+                  ? (msg.dailyQuests as RoomDailyQuestPayload)
+                  : undefined,
+              spawnedMonsters: Array.isArray(msg.spawnedMonsters)
+                ? (msg.spawnedMonsters as SharedSpawnedMonsterPayload[])
+                : [],
             });
             break;
           }
@@ -273,6 +349,35 @@ export class MultiplayerClient {
             break;
           case 'plot:claim':
             if (msg.plot) this.callbacks.onPlotClaim(msg.plot as SavedLandPlot);
+            break;
+          case 'daily:state':
+            if (msg.dailyQuests && typeof msg.dailyQuests === 'object') {
+              this.callbacks.onDailyQuestState?.(msg.dailyQuests as RoomDailyQuestPayload);
+            }
+            break;
+          case 'monster:spawn_egg':
+            if (msg.monster && typeof msg.monster === 'object') {
+              this.callbacks.onRemoteSpawnEgg?.(msg.monster as SharedSpawnedMonsterPayload);
+            }
+            break;
+          case 'room:mode':
+            if (msg.gameMode === 'creative' || msg.gameMode === 'survival') {
+              this.roomGameMode = msg.gameMode;
+              this.callbacks.onRoomModeChange?.(msg.gameMode);
+            }
+            break;
+          case 'player:event':
+            if (
+              (msg.kind === 'eat_food' || msg.kind === 'daily_complete' || msg.kind === 'boss_defeat') &&
+              typeof msg.label === 'string' &&
+              typeof msg.playerName === 'string'
+            ) {
+              this.callbacks.onPlayerEvent?.({
+                kind: msg.kind,
+                label: msg.label,
+                playerName: msg.playerName,
+              });
+            }
             break;
         }
       };
@@ -306,13 +411,20 @@ export class MultiplayerClient {
   }
 
   private startHttpFallback(origin: string): void {
-    if (this.disposed) return;
+    if (this.disposed || this.offlineMode || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      this.connected = false;
+      this.transport = 'offline';
+      this.emitStatus();
+      return;
+    }
     this.cleanupTransports();
     this.activeOrigin = origin;
     this.httpInitialized = false;
     this.knownHttpPlayerIds.clear();
     this.knownHttpHousingSigs.clear();
     this.knownHttpPlotIds.clear();
+    this.knownHttpSpawnIds.clear();
+    this.lastHttpDailySig = '';
 
     let consecutiveFailures = 0;
 
@@ -322,6 +434,7 @@ export class MultiplayerClient {
       const body: Record<string, unknown> = {
         playerId: this.playerId,
         name: this.playerName,
+        gameMode: this.preferredMode ?? undefined,
         ...(this.lastLocalState || {}),
         actions: actionsToSend.length > 0 ? actionsToSend : undefined,
       };
@@ -338,11 +451,14 @@ export class MultiplayerClient {
         const data = (await res.json()) as {
           playerId?: string;
           roomId?: string;
+          roomGameMode?: GameMode;
           playerName?: string;
           shareBaseUrl?: string | null;
           players?: RemotePlayerPayload[];
           housing?: SavedHousingItem[];
           plots?: SavedLandPlot[];
+          dailyQuests?: RoomDailyQuestPayload;
+          spawnedMonsters?: SharedSpawnedMonsterPayload[];
         };
         if (this.disposed) return;
 
@@ -351,6 +467,14 @@ export class MultiplayerClient {
         this.transport = 'http';
         if (typeof data.playerId === 'string') this.playerId = data.playerId;
         if (typeof data.roomId === 'string') this.roomId = data.roomId;
+        if (data.roomGameMode === 'creative' || data.roomGameMode === 'survival') {
+          if (this.httpInitialized && data.roomGameMode !== this.roomGameMode) {
+            this.roomGameMode = data.roomGameMode;
+            this.callbacks.onRoomModeChange?.(data.roomGameMode);
+          } else {
+            this.roomGameMode = data.roomGameMode;
+          }
+        }
         if (typeof data.shareBaseUrl === 'string' && data.shareBaseUrl.length > 0) {
           this.shareBaseUrl = normalizeShareOrigin(data.shareBaseUrl);
         }
@@ -359,6 +483,7 @@ export class MultiplayerClient {
         const players = Array.isArray(data.players) ? data.players : [];
         const housing = Array.isArray(data.housing) ? data.housing : [];
         const plots = Array.isArray(data.plots) ? data.plots : [];
+        const spawnedMonsters = Array.isArray(data.spawnedMonsters) ? data.spawnedMonsters : [];
 
         if (!this.httpInitialized) {
           this.httpInitialized = true;
@@ -367,13 +492,20 @@ export class MultiplayerClient {
             this.knownHttpHousingSigs.set(h.id, `${h.material}:${h.color}:${h.durability ?? ''}:${h.isDoorOpen ?? ''}`);
           }
           for (const pl of plots) this.knownHttpPlotIds.add(pl.id);
+          for (const sm of spawnedMonsters) this.knownHttpSpawnIds.add(sm.id);
+          if (data.dailyQuests) {
+            this.lastHttpDailySig = JSON.stringify(data.dailyQuests);
+          }
           this.callbacks.onInitRoom({
             playerId: this.playerId || '',
             roomId: this.roomId,
+            roomGameMode: this.roomGameMode,
             playerName: this.playerName,
             players,
             housing,
             plots,
+            dailyQuests: data.dailyQuests,
+            spawnedMonsters,
           });
         } else {
           // Diff players
@@ -416,6 +548,23 @@ export class MultiplayerClient {
             if (!this.knownHttpPlotIds.has(pl.id)) {
               this.knownHttpPlotIds.add(pl.id);
               this.callbacks.onPlotClaim(pl);
+            }
+          }
+
+          // Diff daily quests
+          if (data.dailyQuests) {
+            const dSig = JSON.stringify(data.dailyQuests);
+            if (dSig !== this.lastHttpDailySig) {
+              this.lastHttpDailySig = dSig;
+              this.callbacks.onDailyQuestState?.(data.dailyQuests);
+            }
+          }
+
+          // Diff spawned monsters
+          for (const sm of spawnedMonsters) {
+            if (!this.knownHttpSpawnIds.has(sm.id)) {
+              this.knownHttpSpawnIds.add(sm.id);
+              this.callbacks.onRemoteSpawnEgg?.(sm);
             }
           }
         }
@@ -463,10 +612,12 @@ export class MultiplayerClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer !== null || this.disposed) return;
+    if (this.reconnectTimer !== null || this.disposed || this.offlineMode) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
-      this.reconnectDelayMs = Math.min(4500, Math.round(this.reconnectDelayMs * 1.4));
+      if (this.offlineMode || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
+      this.reconnectDelayMs = Math.min(6000, Math.round(this.reconnectDelayMs * 1.45));
       this.connect();
     }, this.reconnectDelayMs);
   }
@@ -508,10 +659,16 @@ export class MultiplayerClient {
     return `${base}/?room=${encodeURIComponent(this.roomId)}`;
   }
 
-  public joinRoom(nextRoomId: string): void {
+  public joinRoom(nextRoomId: string, preferredMode?: GameMode): void {
     const cleaned = nextRoomId.trim().slice(0, 28);
     if (!cleaned || !/^[a-zA-Z0-9_-]{1,28}$/.test(cleaned)) return;
-    if (cleaned === this.roomId && this.connected) return;
+    if (preferredMode) {
+      this.preferredMode = preferredMode;
+    }
+    if (cleaned === this.roomId && this.connected) {
+      if (preferredMode) this.sendRoomMode(preferredMode);
+      return;
+    }
     this.roomId = cleaned;
     this.playerId = null;
     this.triedCanonical = false;
@@ -582,6 +739,46 @@ export class MultiplayerClient {
       this.ws.send(JSON.stringify({ type: 'plot:claim', plot }));
     } else if (this.transport === 'http') {
       this.pendingActions.push({ type: 'plot:claim', plot });
+    }
+  }
+
+  public sendDailyProgress(questId: DailyQuestId, delta: number): void {
+    const safeDelta = Math.max(1, Math.min(50, Math.round(delta)));
+    if (this.transport === 'ws' && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'daily:progress', questId, delta: safeDelta }));
+    } else if (this.transport === 'http') {
+      this.pendingActions.push({ type: 'daily:progress', questId, delta: safeDelta });
+    }
+  }
+
+  public sendSpawnEgg(id: string, eggId: SpawnEggId, x: number, z: number, worldTier: number): void {
+    const payload = { type: 'monster:spawn_egg', id, eggId, x, z, worldTier };
+    if (this.transport === 'ws' && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(payload));
+    } else if (this.transport === 'http') {
+      this.pendingActions.push(payload);
+    }
+  }
+
+  public sendRoomMode(gameMode: GameMode): void {
+    this.preferredMode = gameMode;
+    const payload = { type: 'room:set_mode', gameMode };
+    if (this.transport === 'ws' && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(payload));
+    } else if (this.transport === 'http') {
+      this.pendingActions.push(payload);
+    }
+  }
+
+  public sendPlayerEvent(
+    kind: 'eat_food' | 'daily_complete' | 'boss_defeat',
+    label: string,
+  ): void {
+    const payload = { type: 'player:event', kind, label };
+    if (this.transport === 'ws' && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(payload));
+    } else if (this.transport === 'http') {
+      this.pendingActions.push(payload);
     }
   }
 

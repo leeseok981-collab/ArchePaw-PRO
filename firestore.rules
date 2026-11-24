@@ -1,0 +1,131 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null &&
+             request.auth.uid != null &&
+             request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.matches('^[a-zA-Z0-9_-]{1,40}$');
+    }
+
+    function isValidRoomCode(code) {
+      return code is string && code.matches('^[a-zA-Z0-9_-]{1,28}$');
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'nickname', 'avatarData', 'avatarKind', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['uid', 'nickname', 'avatarData', 'avatarKind', 'createdAt', 'updatedAt']) &&
+             data.uid is string && data.uid == userId &&
+             data.nickname is string && data.nickname.size() >= 1 && data.nickname.size() <= 20 &&
+             data.avatarData is string && data.avatarData.size() <= 180000 &&
+             data.avatarKind is string && data.avatarKind in ['preset', 'google', 'upload'] &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidSavedServer(data, userId, serverId) {
+      return data.keys().hasAll(['id', 'ownerId', 'name', 'code', 'lastPlayedAt', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['id', 'ownerId', 'name', 'code', 'lastPlayedAt', 'createdAt', 'updatedAt']) &&
+             data.id is string && data.id == serverId &&
+             data.ownerId is string && data.ownerId == userId &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 32 &&
+             isValidRoomCode(data.code) &&
+             data.lastPlayedAt is number && data.lastPlayedAt >= 0 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidPlayHistory(data, userId, historyId) {
+      return data.keys().hasAll(['id', 'ownerId', 'code', 'serverName', 'directConnect', 'playedAt', 'createdAt']) &&
+             data.keys().hasOnly(['id', 'ownerId', 'code', 'serverName', 'directConnect', 'playedAt', 'createdAt']) &&
+             data.id is string && data.id == historyId &&
+             data.ownerId is string && data.ownerId == userId &&
+             isValidRoomCode(data.code) &&
+             data.serverName is string && data.serverName.size() <= 32 &&
+             data.directConnect is bool &&
+             data.playedAt is number && data.playedAt >= 0 &&
+             data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Default Deny
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // User Profiles (/users/{userId})
+    // ===============================================================
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(request.resource.data, userId) &&
+                       request.resource.data.createdAt == request.time &&
+                       request.resource.data.updatedAt == request.time;
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(request.resource.data, userId) &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['nickname', 'avatarData', 'avatarKind', 'updatedAt']) &&
+                       request.resource.data.uid == resource.data.uid &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.updatedAt == request.time;
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // Saved Multiplayer Servers (/users/{userId}/servers/{serverId})
+      match /servers/{serverId} {
+        allow get, list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(serverId) &&
+                         isValidSavedServer(request.resource.data, userId, serverId) &&
+                         request.resource.data.createdAt == request.time &&
+                         request.resource.data.updatedAt == request.time;
+        allow update: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(serverId) &&
+                         isValidSavedServer(request.resource.data, userId, serverId) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'code', 'lastPlayedAt', 'updatedAt']) &&
+                         request.resource.data.id == resource.data.id &&
+                         request.resource.data.ownerId == resource.data.ownerId &&
+                         request.resource.data.createdAt == resource.data.createdAt &&
+                         request.resource.data.updatedAt == request.time;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(serverId);
+      }
+
+      // Multiplayer Play History (/users/{userId}/history/{historyId})
+      match /history/{historyId} {
+        allow get, list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(historyId) &&
+                         isValidPlayHistory(request.resource.data, userId, historyId) &&
+                         request.resource.data.createdAt == request.time;
+        allow update: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(historyId) &&
+                         isValidPlayHistory(request.resource.data, userId, historyId) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['serverName', 'directConnect', 'playedAt']) &&
+                         request.resource.data.id == resource.data.id &&
+                         request.resource.data.ownerId == resource.data.ownerId &&
+                         request.resource.data.code == resource.data.code &&
+                         request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(historyId);
+      }
+    }
+  }
+}

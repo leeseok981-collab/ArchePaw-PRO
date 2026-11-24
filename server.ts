@@ -118,6 +118,54 @@ const VALID_ARMORS = new Set([
 
 const VALID_EMOTES = new Set(['wave', 'sit', 'cheer', 'dance', 'bow', 'victory']);
 
+const VALID_GAME_MODES = new Set(['survival', 'creative']);
+
+const VALID_DAILY_QUEST_IDS = new Set([
+  'daily_gather_wood',
+  'daily_mine_ore',
+  'daily_hunt_monsters',
+  'daily_harvest_food',
+  'daily_build_or_plant',
+  'daily_coop_challenge',
+]);
+
+const VALID_SPAWN_EGG_IDS = new Set([
+  'forest_slime',
+  'meadow_boar',
+  'frost_wolf',
+  'night_skeleton',
+  'night_wraith',
+  'water_slime',
+  'wind_slime',
+  'ember_wolf',
+  'sand_scorpion',
+  'water_spirit',
+  'wind_spirit',
+  'fire_spirit',
+  'earth_spirit',
+  'water_spirit_king',
+  'wind_spirit_king',
+  'fire_spirit_king',
+  'earth_spirit_king',
+  'elder_tusk_boss',
+  'alpha_frost_boss',
+  'rune_golem_boss',
+  'coastal_titan_boss',
+  'azure_dragon_boss',
+  'white_tiger_boss',
+  'vermilion_bird_boss',
+  'black_tortoise_boss',
+  'frost_golem',
+]);
+
+function getServerDateKey(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {
   if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
   return Math.max(min, Math.min(max, v));
@@ -145,6 +193,7 @@ interface RemotePlayerState {
   id: string;
   name: string;
   playerClass: string;
+  gameMode: 'survival' | 'creative';
   x: number;
   y: number;
   z: number;
@@ -156,6 +205,15 @@ interface RemotePlayerState {
   weapon: string;
   armor: string;
   emote: string | null;
+}
+
+interface SharedSpawnedMonster {
+  id: string;
+  eggId: string;
+  x: number;
+  z: number;
+  worldTier: number;
+  summonerName: string;
 }
 
 interface SharedHousingTile {
@@ -197,6 +255,12 @@ interface RoomPlayerEntry {
 
 interface WorldRoom {
   id: string;
+  gameMode: 'survival' | 'creative';
+  gameModeLocked: boolean;
+  dailyDate: string;
+  dailyProgress: Record<string, number>;
+  dailyContributors: Record<string, string>;
+  spawnedMonsters: Map<string, SharedSpawnedMonster>;
   players: Map<string, RoomPlayerEntry>;
   housing: Map<string, SharedHousingTile>;
   plots: Map<string, SharedLandPlot>;
@@ -205,13 +269,37 @@ interface WorldRoom {
 
 const MAX_HOUSING_PER_ROOM = 900;
 const MAX_PLOTS_PER_ROOM = 40;
+const MAX_SPAWNED_MONSTERS_PER_ROOM = 40;
 const MAX_PLAYERS_PER_ROOM = 32;
 const MAX_ROOMS = 200;
 const MAX_MSGS_PER_SECOND = 60;
 const rooms = new Map<string, WorldRoom>();
 
-function getOrCreateRoom(roomId: string): WorldRoom | null {
+function ensureRoomDailyDate(room: WorldRoom): void {
+  const today = getServerDateKey();
+  if (room.dailyDate !== today) {
+    room.dailyDate = today;
+    room.dailyProgress = {};
+    room.dailyContributors = {};
+  }
+}
+
+function getRoomDailyPayload(room: WorldRoom) {
+  ensureRoomDailyDate(room);
+  return {
+    dateKey: room.dailyDate,
+    progress: { ...room.dailyProgress },
+    contributors: { ...room.dailyContributors },
+  };
+}
+
+function getOrCreateRoom(roomId: string, requestedMode?: string | null): WorldRoom | null {
   let room = rooms.get(roomId);
+  const validReqMode =
+    typeof requestedMode === 'string' && VALID_GAME_MODES.has(requestedMode)
+      ? (requestedMode as 'survival' | 'creative')
+      : null;
+
   if (!room) {
     if (rooms.size >= MAX_ROOMS) {
       // Evict oldest empty room if available
@@ -227,13 +315,23 @@ function getOrCreateRoom(roomId: string): WorldRoom | null {
     }
     room = {
       id: roomId,
+      gameMode: validReqMode ?? 'survival',
+      gameModeLocked: validReqMode !== null,
+      dailyDate: getServerDateKey(),
+      dailyProgress: {},
+      dailyContributors: {},
+      spawnedMonsters: new Map(),
       players: new Map(),
       housing: new Map(),
       plots: new Map(),
       lastActivityAt: Date.now(),
     };
     rooms.set(roomId, room);
+  } else if (!room.gameModeLocked && validReqMode && room.players.size === 0) {
+    room.gameMode = validReqMode;
+    room.gameModeLocked = true;
   }
+  ensureRoomDailyDate(room);
   room.lastActivityAt = Date.now();
   return room;
 }
@@ -402,6 +500,7 @@ async function startServer() {
     const room = rooms.get(roomId);
     res.json({
       roomId,
+      roomGameMode: room ? room.gameMode : 'survival',
       onlineCount: room ? room.players.size : 0,
       housingCount: room ? room.housing.size : 0,
     });
@@ -410,12 +509,13 @@ async function startServer() {
   // Unified HTTP fallback sync endpoint (shares exact same WorldRoom state with WebSocket clients)
   app.post('/api/rooms/:roomId/sync', (req, res) => {
     const roomId = sanitizeRoomId(req.params.roomId);
-    const room = getOrCreateRoom(roomId);
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const requestedMode = typeof body.gameMode === 'string' ? body.gameMode : null;
+    const room = getOrCreateRoom(roomId, requestedMode);
     if (!room) {
       res.status(503).json({ error: 'Server room capacity reached' });
       return;
     }
-    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
     const now = Date.now();
     let playerId = sanitizeId(body.playerId);
     const fallbackName = `냥기사 #${Math.floor(1000 + Math.random() * 8999)}`;
@@ -435,6 +535,7 @@ async function startServer() {
         id: playerId,
         name: playerName,
         playerClass: typeof body.playerClass === 'string' && VALID_CLASSES.has(body.playerClass) ? body.playerClass : 'warrior',
+        gameMode: room.gameMode,
         x: clampNum(body.x, -800, 800, 0),
         y: clampNum(body.y, -20, 120, 0),
         z: clampNum(body.z, -800, 800, 6.2),
@@ -456,6 +557,9 @@ async function startServer() {
       s.name = sanitizeName(body.name, s.name);
       if (typeof body.playerClass === 'string' && VALID_CLASSES.has(body.playerClass)) {
         s.playerClass = body.playerClass;
+      }
+      if (typeof body.gameMode === 'string' && VALID_GAME_MODES.has(body.gameMode)) {
+        s.gameMode = body.gameMode as 'survival' | 'creative';
       }
       if (typeof body.x === 'number') s.x = clampNum(body.x, -800, 800, s.x);
       if (typeof body.y === 'number') s.y = clampNum(body.y, -20, 120, s.y);
@@ -518,6 +622,60 @@ async function startServer() {
             room.plots.set(id, sharedPlot);
             broadcast(room, { type: 'plot:claim', plot: sharedPlot }, playerId);
           }
+        } else if (act.type === 'daily:progress') {
+          const qId = typeof act.questId === 'string' ? act.questId : '';
+          if (VALID_DAILY_QUEST_IDS.has(qId)) {
+            ensureRoomDailyDate(room);
+            const delta = Math.round(clampNum(act.delta, 1, 50, 1));
+            const prevVal = room.dailyProgress[qId] ?? 0;
+            room.dailyProgress[qId] = Math.min(999, prevVal + delta);
+            room.dailyContributors[qId] = entry.state.name;
+            broadcast(room, { type: 'daily:state', dailyQuests: getRoomDailyPayload(room) });
+          }
+        } else if (act.type === 'monster:spawn_egg') {
+          const id = sanitizeId(act.id);
+          const eggId = typeof act.eggId === 'string' ? act.eggId : '';
+          if (id && VALID_SPAWN_EGG_IDS.has(eggId) && !room.spawnedMonsters.has(id)) {
+            if (room.spawnedMonsters.size >= MAX_SPAWNED_MONSTERS_PER_ROOM) {
+              const oldestKey = room.spawnedMonsters.keys().next().value;
+              if (oldestKey) room.spawnedMonsters.delete(oldestKey);
+            }
+            const monster: SharedSpawnedMonster = {
+              id,
+              eggId,
+              x: clampNum(act.x, -600, 600, 0),
+              z: clampNum(act.z, -600, 600, 0),
+              worldTier: Math.round(clampNum(act.worldTier, 1, 10, 1)),
+              summonerName: entry.state.name,
+            };
+            room.spawnedMonsters.set(id, monster);
+            broadcast(room, { type: 'monster:spawn_egg', monster }, playerId);
+          }
+        } else if (act.type === 'room:set_mode') {
+          if (typeof act.gameMode === 'string' && VALID_GAME_MODES.has(act.gameMode)) {
+            room.gameMode = act.gameMode as 'survival' | 'creative';
+            room.gameModeLocked = true;
+            entry.state.gameMode = room.gameMode;
+            broadcast(room, { type: 'room:mode', gameMode: room.gameMode });
+          }
+        } else if (act.type === 'player:event') {
+          const kind = typeof act.kind === 'string' ? act.kind : '';
+          const label = sanitizeName(act.label, '');
+          if (
+            (kind === 'eat_food' || kind === 'daily_complete' || kind === 'boss_defeat') &&
+            label.length > 0
+          ) {
+            broadcast(
+              room,
+              {
+                type: 'player:event',
+                kind,
+                label: String(act.label).replace(/[\u0000-\u001F\u007F<>]/g, '').trim().slice(0, 60),
+                playerName: entry.state.name,
+              },
+              playerId,
+            );
+          }
         }
       }
     }
@@ -533,6 +691,7 @@ async function startServer() {
     res.json({
       playerId,
       roomId: room.id,
+      roomGameMode: room.gameMode,
       playerName: entry.state.name,
       shareBaseUrl: SHARE_BASE_URL,
       players: Array.from(room.players.values())
@@ -540,6 +699,8 @@ async function startServer() {
         .map((c) => c.state),
       housing: Array.from(room.housing.values()),
       plots: Array.from(room.plots.values()),
+      dailyQuests: getRoomDailyPayload(room),
+      spawnedMonsters: Array.from(room.spawnedMonsters.values()),
     });
   });
 
@@ -584,11 +745,12 @@ async function startServer() {
 
     const url = new URL(req.url || '/ws', 'http://localhost');
     const roomId = sanitizeRoomId(url.searchParams.get('room'));
+    const requestedMode = url.searchParams.get('mode');
     const fallbackName = `모험가 #${Math.floor(1000 + Math.random() * 8999)}`;
     const playerName = sanitizeName(url.searchParams.get('name'), fallbackName);
     const playerId = `p_${crypto.randomUUID().slice(0, 12)}`;
 
-    const room = getOrCreateRoom(roomId);
+    const room = getOrCreateRoom(roomId, requestedMode);
     if (!room || room.players.size >= MAX_PLAYERS_PER_ROOM) {
       ws.close(1013, 'Room capacity reached');
       return;
@@ -597,6 +759,7 @@ async function startServer() {
       id: playerId,
       name: playerName,
       playerClass: 'warrior',
+      gameMode: room.gameMode,
       x: 0,
       y: 0,
       z: 6.2,
@@ -618,6 +781,7 @@ async function startServer() {
         type: 'init',
         playerId,
         roomId: room.id,
+        roomGameMode: room.gameMode,
         playerName,
         shareBaseUrl: SHARE_BASE_URL,
         players: Array.from(room.players.values())
@@ -625,6 +789,8 @@ async function startServer() {
           .map((c) => c.state),
         housing: Array.from(room.housing.values()),
         plots: Array.from(room.plots.values()),
+        dailyQuests: getRoomDailyPayload(room),
+        spawnedMonsters: Array.from(room.spawnedMonsters.values()),
       }),
     );
 
@@ -670,6 +836,9 @@ async function startServer() {
         s.swinging = Boolean(msg.swinging);
         if (typeof msg.playerClass === 'string' && VALID_CLASSES.has(msg.playerClass)) {
           s.playerClass = msg.playerClass;
+        }
+        if (typeof msg.gameMode === 'string' && VALID_GAME_MODES.has(msg.gameMode)) {
+          s.gameMode = msg.gameMode as 'survival' | 'creative';
         }
         if (typeof msg.weapon === 'string' && VALID_WEAPONS.has(msg.weapon)) {
           s.weapon = msg.weapon;
@@ -745,6 +914,74 @@ async function startServer() {
         };
         room.plots.set(id, sharedPlot);
         broadcast(room, { type: 'plot:claim', plot: sharedPlot }, playerId);
+        return;
+      }
+
+      if (type === 'daily:progress') {
+        const qId = typeof msg.questId === 'string' ? msg.questId : '';
+        if (!VALID_DAILY_QUEST_IDS.has(qId)) return;
+        ensureRoomDailyDate(room);
+        const delta = Math.round(clampNum(msg.delta, 1, 50, 1));
+        const client = room.players.get(playerId);
+        const prevVal = room.dailyProgress[qId] ?? 0;
+        room.dailyProgress[qId] = Math.min(999, prevVal + delta);
+        room.dailyContributors[qId] = client?.state.name || playerName;
+        broadcast(room, { type: 'daily:state', dailyQuests: getRoomDailyPayload(room) });
+        return;
+      }
+
+      if (type === 'monster:spawn_egg') {
+        const id = sanitizeId(msg.id);
+        const eggId = typeof msg.eggId === 'string' ? msg.eggId : '';
+        if (!id || !VALID_SPAWN_EGG_IDS.has(eggId) || room.spawnedMonsters.has(id)) return;
+        if (room.spawnedMonsters.size >= MAX_SPAWNED_MONSTERS_PER_ROOM) {
+          const oldestKey = room.spawnedMonsters.keys().next().value;
+          if (oldestKey) room.spawnedMonsters.delete(oldestKey);
+        }
+        const client = room.players.get(playerId);
+        const monster: SharedSpawnedMonster = {
+          id,
+          eggId,
+          x: clampNum(msg.x, -600, 600, 0),
+          z: clampNum(msg.z, -600, 600, 0),
+          worldTier: Math.round(clampNum(msg.worldTier, 1, 10, 1)),
+          summonerName: client?.state.name || playerName,
+        };
+        room.spawnedMonsters.set(id, monster);
+        broadcast(room, { type: 'monster:spawn_egg', monster }, playerId);
+        return;
+      }
+
+      if (type === 'room:set_mode') {
+        if (typeof msg.gameMode !== 'string' || !VALID_GAME_MODES.has(msg.gameMode)) return;
+        room.gameMode = msg.gameMode as 'survival' | 'creative';
+        room.gameModeLocked = true;
+        const client = room.players.get(playerId);
+        if (client) client.state.gameMode = room.gameMode;
+        broadcast(room, { type: 'room:mode', gameMode: room.gameMode });
+        return;
+      }
+
+      if (type === 'player:event') {
+        const kind = typeof msg.kind === 'string' ? msg.kind : '';
+        const rawLabel = typeof msg.label === 'string' ? msg.label : '';
+        const label = rawLabel.replace(/[\u0000-\u001F\u007F<>]/g, '').trim().slice(0, 60);
+        if (
+          (kind === 'eat_food' || kind === 'daily_complete' || kind === 'boss_defeat') &&
+          label.length > 0
+        ) {
+          const client = room.players.get(playerId);
+          broadcast(
+            room,
+            {
+              type: 'player:event',
+              kind,
+              label,
+              playerName: client?.state.name || playerName,
+            },
+            playerId,
+          );
+        }
       }
     });
 

@@ -1,12 +1,13 @@
 import * as THREE from 'three';
-import { NodeKind, ResourceKind } from './types';
+import { FoodId, NodeKind, ResourceKind } from './types';
 import { ProceduralTexturePack } from './textures';
-import { getTerrainHeight } from './terrain';
+import { createStylizedWaterMaterial, getTerrainHeight } from './terrain';
 
 export interface WorldResourceNode {
   id: string;
   kind: NodeKind;
   resourceYield?: ResourceKind;
+  foodYield?: FoodId;
   yieldAmount: number;
   label: string;
   actionLabel: string;
@@ -621,6 +622,550 @@ export class WorldAssetLibrary {
       hitFlashTimer: 0,
       fallProgress: 0,
       fallDirAngle: 0,
+      hitMeshes,
+      outlineGroup,
+      outlineMaterial,
+      groundHalo,
+      outlineStrength: 0,
+    };
+  }
+
+  public createFoodNode(
+    id: string,
+    kind:
+      | 'apple_tree'
+      | 'berry_bush'
+      | 'mushroom_patch'
+      | 'wild_beehive'
+      | 'coconut_palm'
+      | 'cactus_pear'
+      | 'carrot_patch',
+    x: number,
+    z: number,
+    tier: number,
+    scale = 1.0,
+  ): WorldResourceNode {
+    const y = getTerrainHeight(x, z);
+    const group = new THREE.Group();
+    group.position.set(x, y, z);
+
+    const shd = new THREE.Mesh(this.shadowPlaneGeo, this.contactShadowMat);
+    shd.scale.setScalar((kind === 'apple_tree' || kind === 'coconut_palm' ? 3.2 : 1.9) * scale);
+    shd.position.y = 0.04;
+    group.add(shd);
+
+    const stumpVisual = new THREE.Group();
+    const activeVisual = new THREE.Group();
+    const hitMeshes: THREE.Mesh[] = [];
+
+    let foodYield: FoodId = 'apple';
+    let yieldAmount = 2;
+    let label = '사과 나무';
+    let actionLabel = '채집하기';
+    let radius = 0.65 * scale;
+    let interactRadius = 3.15;
+    let maxHp = 2;
+    let regrowDuration = 38;
+    let outlineColor = 0xfde047;
+    let haloRadius = 1.2 * scale;
+
+    if (kind === 'apple_tree') {
+      foodYield = 'apple';
+      yieldAmount = 2;
+      label = '사과 나무';
+      actionLabel = '사과 따기';
+      radius = 0.56 * scale;
+      maxHp = 2;
+      regrowDuration = 40;
+      outlineColor = 0xff7b7b;
+      haloRadius = 1.3 * scale;
+
+      const stumpTrunk = new THREE.Mesh(
+        this.track(new THREE.CylinderGeometry(0.24 * scale, 0.36 * scale, 0.45 * scale, 8)),
+        this.barkMat,
+      );
+      stumpTrunk.position.y = 0.22 * scale;
+      stumpVisual.add(stumpTrunk);
+
+      const nodeBark = this.track(this.barkMat.clone());
+      const trunkH = 2.6 * scale;
+      const trunk = new THREE.Mesh(
+        this.track(new THREE.CylinderGeometry(0.18 * scale, 0.3 * scale, trunkH, 8)),
+        nodeBark,
+      );
+      trunk.position.y = trunkH * 0.5;
+      trunk.castShadow = true;
+      trunk.receiveShadow = true;
+      activeVisual.add(trunk);
+      hitMeshes.push(trunk);
+
+      const leafMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0x4b9440, roughness: 0.84, metalness: 0.02 }),
+      );
+      const crownOffsets: Array<[number, number, number, number]> = [
+        [0, trunkH + 0.55 * scale, 0, 1.35 * scale],
+        [-0.75 * scale, trunkH + 0.12 * scale, 0.35 * scale, 0.92 * scale],
+        [0.78 * scale, trunkH + 0.16 * scale, -0.25 * scale, 0.96 * scale],
+        [0.1 * scale, trunkH + 0.22 * scale, 0.72 * scale, 0.88 * scale],
+      ];
+      for (const [cx, cy, cz, cr] of crownOffsets) {
+        const dome = new THREE.Mesh(this.track(new THREE.IcosahedronGeometry(cr, 1)), leafMat);
+        dome.position.set(cx, cy, cz);
+        dome.scale.set(1.06, 0.84, 1.04);
+        dome.castShadow = true;
+        dome.receiveShadow = true;
+        activeVisual.add(dome);
+        hitMeshes.push(dome);
+      }
+
+      const appleMat = this.track(
+        new THREE.MeshStandardMaterial({
+          color: 0xe63946,
+          emissive: 0x590d14,
+          emissiveIntensity: 0.25,
+          roughness: 0.32,
+          metalness: 0.08,
+        }),
+      );
+      const appleGeo = this.track(new THREE.SphereGeometry(0.17 * scale, 8, 7));
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + 0.25;
+        const r = (0.92 + (i % 2) * 0.28) * scale;
+        const apple = new THREE.Mesh(appleGeo, appleMat);
+        apple.position.set(
+          Math.cos(a) * r,
+          trunkH + (0.05 + (i % 3) * 0.32) * scale,
+          Math.sin(a) * r,
+        );
+        apple.castShadow = true;
+        activeVisual.add(apple);
+        hitMeshes.push(apple);
+      }
+    } else if (kind === 'berry_bush') {
+      foodYield = 'berry';
+      yieldAmount = 3;
+      label = '베리 덤불';
+      actionLabel = '베리 따기';
+      radius = 0.58 * scale;
+      maxHp = 1;
+      regrowDuration = 30;
+      outlineColor = 0xf472b6;
+      haloRadius = 1.05 * scale;
+
+      const bareLeafMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0x355c32, roughness: 0.9 }),
+      );
+      const bareBush = new THREE.Mesh(
+        this.track(new THREE.IcosahedronGeometry(0.56 * scale, 1)),
+        bareLeafMat,
+      );
+      bareBush.scale.set(1.15, 0.65, 1.15);
+      bareBush.position.y = 0.34 * scale;
+      stumpVisual.add(bareBush);
+
+      const bushMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0x2d7a47, roughness: 0.85, metalness: 0.02 }),
+      );
+      const puffs: Array<[number, number, number, number]> = [
+        [0, 0.55 * scale, 0, 0.68 * scale],
+        [0.48 * scale, 0.4 * scale, 0.22 * scale, 0.48 * scale],
+        [-0.45 * scale, 0.42 * scale, -0.2 * scale, 0.5 * scale],
+        [0.05 * scale, 0.38 * scale, -0.44 * scale, 0.45 * scale],
+      ];
+      for (const [px, py, pz, pr] of puffs) {
+        const puff = new THREE.Mesh(this.track(new THREE.IcosahedronGeometry(pr, 1)), bushMat);
+        puff.position.set(px, py, pz);
+        puff.scale.set(1.08, 0.85, 1.08);
+        puff.castShadow = true;
+        puff.receiveShadow = true;
+        activeVisual.add(puff);
+        hitMeshes.push(puff);
+      }
+
+      const berryMat = this.track(
+        new THREE.MeshStandardMaterial({
+          color: 0xdb2777,
+          emissive: 0x701a4a,
+          emissiveIntensity: 0.35,
+          roughness: 0.28,
+        }),
+      );
+      const berryGeo = this.track(new THREE.SphereGeometry(0.1 * scale, 7, 6));
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2;
+        const rad = (0.48 + (i % 3) * 0.16) * scale;
+        const berry = new THREE.Mesh(berryGeo, berryMat);
+        berry.position.set(
+          Math.cos(a) * rad,
+          (0.45 + (i % 3) * 0.22) * scale,
+          Math.sin(a) * rad,
+        );
+        activeVisual.add(berry);
+        hitMeshes.push(berry);
+      }
+    } else if (kind === 'mushroom_patch') {
+      foodYield = 'mushroom';
+      yieldAmount = 2;
+      label = '숲 버섯 군락';
+      actionLabel = '버섯 채집';
+      radius = 0.45 * scale;
+      maxHp = 1;
+      regrowDuration = 34;
+      outlineColor = 0xf59e0b;
+      haloRadius = 0.95 * scale;
+
+      const mossPad = new THREE.Mesh(
+        this.track(new THREE.CylinderGeometry(0.68 * scale, 0.78 * scale, 0.14 * scale, 9)),
+        this.mossMat,
+      );
+      mossPad.position.y = 0.07 * scale;
+      stumpVisual.add(mossPad);
+
+      const stemMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0xf4ead5, roughness: 0.8 }),
+      );
+      const capMat = this.track(
+        new THREE.MeshStandardMaterial({
+          color: 0xd97706,
+          emissive: 0x5c2c04,
+          emissiveIntensity: 0.22,
+          roughness: 0.45,
+        }),
+      );
+      const spotMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0xfef3c7, roughness: 0.7 }),
+      );
+      const specs: Array<[number, number, number, number]> = [
+        [0, 0, 0.56, 0.44],
+        [0.42, 0.24, 0.38, 0.32],
+        [-0.38, 0.2, 0.42, 0.34],
+        [0.14, -0.4, 0.34, 0.28],
+        [-0.25, -0.32, 0.3, 0.25],
+      ];
+      for (const [mx, mz, h, capR] of specs) {
+        const stem = new THREE.Mesh(
+          this.track(new THREE.CylinderGeometry(capR * 0.3 * scale, capR * 0.4 * scale, h * scale, 7)),
+          stemMat,
+        );
+        stem.position.set(mx * scale, h * 0.5 * scale, mz * scale);
+        stem.castShadow = true;
+        activeVisual.add(stem);
+        hitMeshes.push(stem);
+
+        const cap = new THREE.Mesh(
+          this.track(new THREE.SphereGeometry(capR * scale, 9, 6, 0, Math.PI * 2, 0, Math.PI * 0.58)),
+          capMat,
+        );
+        cap.position.set(mx * scale, h * 0.9 * scale, mz * scale);
+        cap.castShadow = true;
+        activeVisual.add(cap);
+        hitMeshes.push(cap);
+
+        const spot = new THREE.Mesh(this.track(new THREE.SphereGeometry(capR * 0.18 * scale, 5, 5)), spotMat);
+        spot.position.set((mx + capR * 0.2) * scale, (h * 0.9 + capR * 0.52) * scale, mz * scale);
+        activeVisual.add(spot);
+      }
+    } else if (kind === 'wild_beehive') {
+      foodYield = 'honey';
+      yieldAmount = 2;
+      label = '야생 벌집';
+      actionLabel = '꿀 채취';
+      radius = 0.55 * scale;
+      maxHp = 2;
+      regrowDuration = 48;
+      outlineColor = 0xfacc15;
+      haloRadius = 1.05 * scale;
+
+      const post = new THREE.Mesh(
+        this.track(new THREE.CylinderGeometry(0.18 * scale, 0.26 * scale, 1.45 * scale, 8)),
+        this.barkMat,
+      );
+      post.position.y = 0.72 * scale;
+      post.castShadow = true;
+      stumpVisual.add(post);
+
+      const arm = new THREE.Mesh(
+        this.track(new THREE.CylinderGeometry(0.08 * scale, 0.12 * scale, 0.85 * scale, 6)),
+        this.barkMat,
+      );
+      arm.position.set(0.32 * scale, 1.38 * scale, 0);
+      arm.rotation.z = -Math.PI * 0.36;
+      stumpVisual.add(arm);
+
+      const hiveMat = this.track(
+        new THREE.MeshStandardMaterial({
+          color: 0xf59e0b,
+          emissive: 0x92400e,
+          emissiveIntensity: 0.32,
+          roughness: 0.42,
+        }),
+      );
+      const bandRadii = [0.22, 0.34, 0.38, 0.3, 0.18];
+      bandRadii.forEach((br, idx) => {
+        const ring = new THREE.Mesh(
+          this.track(new THREE.CylinderGeometry(br * scale, (br * 1.04) * scale, 0.16 * scale, 9)),
+          hiveMat,
+        );
+        ring.position.set(0.55 * scale, (1.28 - idx * 0.14) * scale, 0);
+        ring.castShadow = true;
+        activeVisual.add(ring);
+        hitMeshes.push(ring);
+      });
+
+      const hole = new THREE.Mesh(
+        this.track(new THREE.SphereGeometry(0.1 * scale, 6, 6)),
+        this.metalDarkMat,
+      );
+      hole.position.set(0.55 * scale, 0.96 * scale, 0.34 * scale);
+      activeVisual.add(hole);
+    } else if (kind === 'coconut_palm') {
+      foodYield = 'coconut';
+      yieldAmount = 2;
+      label = '해변 야자수';
+      actionLabel = '코코넛 따기';
+      radius = 0.56 * scale;
+      maxHp = 2;
+      regrowDuration = 46;
+      outlineColor = 0xa3e635;
+      haloRadius = 1.25 * scale;
+
+      const palmBase = new THREE.Mesh(
+        this.track(new THREE.CylinderGeometry(0.22 * scale, 0.34 * scale, 0.48 * scale, 8)),
+        this.barkMat,
+      );
+      palmBase.position.y = 0.24 * scale;
+      stumpVisual.add(palmBase);
+
+      const palmBarkMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0x9b744c, roughness: 0.88 }),
+      );
+      // Curved segmented trunk
+      let topX = 0;
+      let topY = 0;
+      for (let s = 0; s < 5; s++) {
+        const segH = 0.72 * scale;
+        const seg = new THREE.Mesh(
+          this.track(new THREE.CylinderGeometry((0.23 - s * 0.022) * scale, (0.27 - s * 0.022) * scale, segH, 7)),
+          palmBarkMat,
+        );
+        const lean = s * 0.075;
+        topX += Math.sin(lean) * segH * 0.72;
+        topY += Math.cos(lean) * segH * 0.92;
+        seg.position.set(topX, topY - segH * 0.35, 0);
+        seg.rotation.z = -lean;
+        seg.castShadow = true;
+        activeVisual.add(seg);
+        hitMeshes.push(seg);
+      }
+
+      const frondMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0x4ca649, roughness: 0.78, side: THREE.DoubleSide }),
+      );
+      for (let f = 0; f < 6; f++) {
+        const a = (f / 6) * Math.PI * 2;
+        const frond = new THREE.Mesh(
+          this.track(new THREE.ConeGeometry(0.42 * scale, 2.1 * scale, 4)),
+          frondMat,
+        );
+        frond.scale.set(1, 1, 0.24);
+        frond.position.set(
+          topX + Math.cos(a) * 0.95 * scale,
+          topY + 0.15 * scale,
+          Math.sin(a) * 0.95 * scale,
+        );
+        frond.rotation.order = 'YXZ';
+        frond.rotation.y = -a + Math.PI * 0.5;
+        frond.rotation.x = 1.18;
+        frond.castShadow = true;
+        activeVisual.add(frond);
+        hitMeshes.push(frond);
+      }
+
+      const cocoMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0x6b4226, roughness: 0.75 }),
+      );
+      const cocoGeo = this.track(new THREE.SphereGeometry(0.22 * scale, 8, 7));
+      for (let c = 0; c < 3; c++) {
+        const a = (c / 3) * Math.PI * 2;
+        const coco = new THREE.Mesh(cocoGeo, cocoMat);
+        coco.position.set(
+          topX + Math.cos(a) * 0.28 * scale,
+          topY - 0.16 * scale,
+          Math.sin(a) * 0.28 * scale,
+        );
+        coco.castShadow = true;
+        activeVisual.add(coco);
+        hitMeshes.push(coco);
+      }
+    } else if (kind === 'cactus_pear') {
+      foodYield = 'cactus_fruit';
+      yieldAmount = 2;
+      label = '사막 선인장';
+      actionLabel = '열매 채집';
+      radius = 0.55 * scale;
+      maxHp = 2;
+      regrowDuration = 42;
+      outlineColor = 0xf43f5e;
+      haloRadius = 1.05 * scale;
+
+      const cactusMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0x3b8c52, roughness: 0.82 }),
+      );
+      const baseCactus = new THREE.Mesh(
+        this.track(new THREE.CylinderGeometry(0.28 * scale, 0.34 * scale, 0.5 * scale, 8)),
+        cactusMat,
+      );
+      baseCactus.position.y = 0.25 * scale;
+      stumpVisual.add(baseCactus);
+
+      const mainStem = new THREE.Mesh(
+        this.track(new THREE.CapsuleGeometry(0.32 * scale, 1.6 * scale, 5, 8)),
+        cactusMat,
+      );
+      mainStem.position.y = 1.1 * scale;
+      mainStem.castShadow = true;
+      activeVisual.add(mainStem);
+      hitMeshes.push(mainStem);
+
+      for (const side of [-1, 1]) {
+        const arm = new THREE.Mesh(
+          this.track(new THREE.CapsuleGeometry(0.21 * scale, 0.75 * scale, 4, 7)),
+          cactusMat,
+        );
+        arm.position.set(side * 0.52 * scale, (1.15 + side * 0.16) * scale, 0);
+        arm.rotation.z = -side * 0.25;
+        arm.castShadow = true;
+        activeVisual.add(arm);
+        hitMeshes.push(arm);
+      }
+
+      const pearMat = this.track(
+        new THREE.MeshStandardMaterial({
+          color: 0xe11d48,
+          emissive: 0x881337,
+          emissiveIntensity: 0.38,
+          roughness: 0.35,
+        }),
+      );
+      const pearCoords: Array<[number, number, number]> = [
+        [0, 2.22 * scale, 0],
+        [-0.58 * scale, 1.56 * scale, 0],
+        [0.58 * scale, 1.88 * scale, 0],
+      ];
+      for (const [px, py, pz] of pearCoords) {
+        const pear = new THREE.Mesh(this.track(new THREE.SphereGeometry(0.17 * scale, 8, 7)), pearMat);
+        pear.scale.set(0.85, 1.22, 0.85);
+        pear.position.set(px, py, pz);
+        activeVisual.add(pear);
+        hitMeshes.push(pear);
+      }
+    } else {
+      // carrot_patch
+      foodYield = 'carrot';
+      yieldAmount = 3;
+      label = '야생 당근 밭';
+      actionLabel = '당근 수확';
+      radius = 0.52 * scale;
+      maxHp = 1;
+      regrowDuration = 32;
+      outlineColor = 0xfb923c;
+      haloRadius = 1.05 * scale;
+
+      const soilMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.95 }),
+      );
+      const mound = new THREE.Mesh(
+        this.track(new THREE.CylinderGeometry(0.75 * scale, 0.92 * scale, 0.22 * scale, 10)),
+        soilMat,
+      );
+      mound.position.y = 0.1 * scale;
+      mound.receiveShadow = true;
+      stumpVisual.add(mound);
+
+      const carrotMat = this.track(
+        new THREE.MeshStandardMaterial({
+          color: 0xf97316,
+          emissive: 0x7c2d12,
+          emissiveIntensity: 0.22,
+          roughness: 0.45,
+        }),
+      );
+      const leafTopMat = this.track(
+        new THREE.MeshStandardMaterial({ color: 0x4ade80, roughness: 0.82 }),
+      );
+
+      const spots: Array<[number, number]> = [
+        [0, 0],
+        [0.36, 0.22],
+        [-0.34, 0.24],
+        [0.24, -0.34],
+        [-0.28, -0.26],
+      ];
+      for (const [cx, cz] of spots) {
+        const root = new THREE.Mesh(
+          this.track(new THREE.ConeGeometry(0.11 * scale, 0.36 * scale, 6)),
+          carrotMat,
+        );
+        root.rotation.x = Math.PI;
+        root.position.set(cx * scale, 0.26 * scale, cz * scale);
+        root.castShadow = true;
+        activeVisual.add(root);
+        hitMeshes.push(root);
+
+        const top = new THREE.Mesh(
+          this.track(new THREE.ConeGeometry(0.16 * scale, 0.42 * scale, 5)),
+          leafTopMat,
+        );
+        top.position.set(cx * scale, 0.58 * scale, cz * scale);
+        top.castShadow = true;
+        activeVisual.add(top);
+        hitMeshes.push(top);
+      }
+    }
+
+    group.add(stumpVisual);
+
+    const { outlineGroup, outlineMaterial, groundHalo } = this.buildNodeOutlineRig(
+      group,
+      activeVisual,
+      hitMeshes,
+      outlineColor,
+      0.055 * scale,
+      haloRadius,
+    );
+
+    activeVisual.rotation.y = Math.random() * Math.PI * 2;
+    group.add(activeVisual);
+    group.userData = { nodeId: id };
+    hitMeshes.forEach((m) => {
+      m.userData = { nodeId: id };
+    });
+
+    return {
+      id,
+      kind,
+      foodYield,
+      yieldAmount,
+      label,
+      actionLabel,
+      tier,
+      x,
+      y,
+      z,
+      radius,
+      interactRadius,
+      hp: maxHp,
+      maxHp,
+      isDepleted: false,
+      regrowTimer: 0,
+      regrowDuration,
+      group,
+      activeVisual,
+      stumpVisual,
+      shakeTimer: 0,
+      hitFlashTimer: 0,
+      fallProgress: 0,
+      fallDirAngle: Math.random() * Math.PI * 2,
       hitMeshes,
       outlineGroup,
       outlineMaterial,
@@ -2024,6 +2569,711 @@ export function createTrialDungeonArena(): TrialDungeonArenaRig {
 
   return { group, sealRing, portalRing, setFloorTheme };
 }
+
+export interface WaterfallEnvLight {
+  sunDir: THREE.Vector3;
+  sunColor: THREE.Color;
+  skyHorizon: THREE.Color;
+  skyZenith: THREE.Color;
+  fogColor: THREE.Color;
+  fogDensity: number;
+  nightFactor: number;
+}
+
+export interface ScenicWaterfallRig {
+  group: THREE.Group;
+  focalX: number;
+  focalY: number;
+  focalZ: number;
+  colliders: StaticCollider[];
+  update: (
+    dt: number,
+    elapsed: number,
+    reducedEffects?: boolean,
+    envLight?: WaterfallEnvLight,
+  ) => void;
+}
+
+/**
+ * Generates a tileable vertical rushing-water & foam CanvasTexture for the waterfall curtains.
+ */
+function createWaterfallFlowTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+
+  // Base cyan-azure translucent gradient with soft feathered side edges
+  const hGrad = ctx.createLinearGradient(0, 0, 128, 0);
+  hGrad.addColorStop(0.0, 'rgba(130, 224, 255, 0.0)');
+  hGrad.addColorStop(0.14, 'rgba(116, 218, 252, 0.78)');
+  hGrad.addColorStop(0.5, 'rgba(174, 240, 255, 0.92)');
+  hGrad.addColorStop(0.86, 'rgba(116, 218, 252, 0.78)');
+  hGrad.addColorStop(1.0, 'rgba(130, 224, 255, 0.0)');
+  ctx.fillStyle = hGrad;
+  ctx.fillRect(0, 0, 128, 256);
+
+  // Flowing white-water aerated vertical streaks (tileable vertically)
+  for (let i = 0; i < 42; i++) {
+    const sx = 12 + ((i * 37) % 104);
+    const sy = (i * 53) % 256;
+    const sw = 2.5 + (i % 4) * 1.9;
+    const sh = 38 + (i % 5) * 26;
+    const alpha = 0.28 + (i % 3) * 0.18;
+    const grad = ctx.createLinearGradient(sx, sy, sx, sy + sh);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.35, `rgba(244,252,255,${alpha.toFixed(2)})`);
+    grad.addColorStop(0.7, `rgba(255,255,255,${(alpha * 0.9).toFixed(2)})`);
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(sx, sy, sw, sh);
+    if (sy + sh > 256) {
+      ctx.fillRect(sx, sy - 256, sw, sh);
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1, 1.35);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/**
+ * Generates a delicate sunlit rainbow mist gradient texture for the waterfall spray arc.
+ */
+function createRainbowMistTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d')!;
+
+  const vGrad = ctx.createLinearGradient(0, 0, 0, 64);
+  vGrad.addColorStop(0.0, 'rgba(255, 110, 110, 0.0)');
+  vGrad.addColorStop(0.18, 'rgba(255, 132, 118, 0.42)');
+  vGrad.addColorStop(0.34, 'rgba(255, 214, 112, 0.46)');
+  vGrad.addColorStop(0.5, 'rgba(134, 245, 168, 0.44)');
+  vGrad.addColorStop(0.68, 'rgba(108, 212, 255, 0.42)');
+  vGrad.addColorStop(0.84, 'rgba(168, 134, 255, 0.32)');
+  vGrad.addColorStop(1.0, 'rgba(168, 134, 255, 0.0)');
+  ctx.fillStyle = vGrad;
+  ctx.fillRect(0, 0, 128, 64);
+
+  // Soft horizontal fade at both ends of the rainbow arc
+  ctx.globalCompositeOperation = 'destination-in';
+  const hGrad = ctx.createLinearGradient(0, 0, 128, 0);
+  hGrad.addColorStop(0.0, 'rgba(0,0,0,0)');
+  hGrad.addColorStop(0.22, 'rgba(0,0,0,1)');
+  hGrad.addColorStop(0.78, 'rgba(0,0,0,1)');
+  hGrad.addColorStop(1.0, 'rgba(0,0,0,0)');
+  ctx.fillStyle = hGrad;
+  ctx.fillRect(0, 0, 128, 64);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/**
+ * High-craft procedural Scenic Waterfall Cliff & Plunge Pool Vista
+ * overlooking the central emerald lake at (31.5, 13.5), showcased both
+ * during the rotating main-menu camera pan and during live exploration.
+ */
+export function createScenicWaterfallLandmark(): ScenicWaterfallRig {
+  const x = 31.5;
+  const z = 13.5;
+  const baseY = getTerrainHeight(x, z);
+
+  const group = new THREE.Group();
+  group.position.set(x, baseY, z);
+  // Orient waterfall front toward the lake / village valley (-X, +Z)
+  group.rotation.y = -Math.PI * 0.72;
+
+  const cliffStoneMat = new THREE.MeshStandardMaterial({
+    color: 0x5c6670,
+    roughness: 0.9,
+    metalness: 0.04,
+    flatShading: true,
+  });
+  const darkSlateMat = new THREE.MeshStandardMaterial({
+    color: 0x3a434e,
+    roughness: 0.86,
+    metalness: 0.07,
+    flatShading: true,
+  });
+  // Wet glistening dark rock immediately behind the waterfall cascade
+  const wetRockMat = new THREE.MeshStandardMaterial({
+    color: 0x26313b,
+    roughness: 0.26,
+    metalness: 0.16,
+    flatShading: true,
+  });
+  const mossCapMat = new THREE.MeshStandardMaterial({
+    color: 0x4c8c42,
+    roughness: 0.92,
+    metalness: 0.0,
+    flatShading: true,
+  });
+  const vineMat = new THREE.MeshStandardMaterial({
+    color: 0x3b7a38,
+    roughness: 0.88,
+  });
+
+  const flowTex = createWaterfallFlowTexture();
+  const waterSheetMat = new THREE.MeshStandardMaterial({
+    map: flowTex,
+    color: 0xdff8ff,
+    emissive: 0x1d6c88,
+    emissiveIntensity: 0.34,
+    roughness: 0.18,
+    metalness: 0.08,
+    transparent: true,
+    opacity: 0.92,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+
+  const foamMat = new THREE.MeshBasicMaterial({
+    color: 0xf0fbff,
+    transparent: true,
+    opacity: 0.74,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const upperPoolMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdd8,
+    emissive: 0x0f5a75,
+    emissiveIntensity: 0.28,
+    roughness: 0.14,
+    metalness: 0.16,
+    transparent: true,
+    opacity: 0.88,
+  });
+  const woodMat = new THREE.MeshStandardMaterial({
+    color: 0x7d5131,
+    roughness: 0.84,
+  });
+  const lanternGlowMat = new THREE.MeshStandardMaterial({
+    color: 0xffe6a3,
+    emissive: 0xffb74d,
+    emissiveIntensity: 1.65,
+    roughness: 0.28,
+  });
+  const blossomMat = new THREE.MeshStandardMaterial({
+    color: 0xf9a8d4,
+    emissive: 0x5c1d3d,
+    emissiveIntensity: 0.14,
+    roughness: 0.8,
+    flatShading: true,
+  });
+  const pineMat = new THREE.MeshStandardMaterial({
+    color: 0x2d6845,
+    roughness: 0.88,
+    flatShading: true,
+  });
+
+  // 1) Tiered cliff monoliths forming a natural sculpted horseshoe gorge
+  const cliffSpecs: Array<[number, number, number, number, number, number, number, boolean]> = [
+    [0, 5.2, -3.6, 5.8, 11.6, 4.5, 0, true],
+    [-4.3, 4.5, -2.2, 4.1, 9.9, 3.9, 0.3, false],
+    [4.4, 4.7, -2.0, 4.2, 10.1, 3.9, -0.28, false],
+    [-6.2, 2.8, 0.9, 3.3, 6.4, 3.3, 0.52, false],
+    [6.1, 3.0, 1.1, 3.4, 6.7, 3.2, -0.45, false],
+    [0, 9.6, -4.7, 6.8, 3.4, 4.4, 0.08, false],
+    [-2.5, 2.2, -2.0, 2.4, 4.8, 2.2, 0.2, true],
+    [2.6, 2.3, -1.9, 2.3, 4.6, 2.2, -0.22, true],
+  ];
+  for (let i = 0; i < cliffSpecs.length; i++) {
+    const [cx, cy, cz, sx, sy, sz, ry, isWet] = cliffSpecs[i];
+    const rock = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(1, 1),
+      isWet ? wetRockMat : i % 2 === 0 ? cliffStoneMat : darkSlateMat,
+    );
+    rock.scale.set(sx * 0.56, sy * 0.56, sz * 0.56);
+    rock.position.set(cx, cy, cz);
+    rock.rotation.set(0.08 * (i % 3), ry, 0.05 * ((i + 1) % 2));
+    rock.receiveShadow = true;
+    group.add(rock);
+
+    // Lush mossy green terrace cap on upper ledges
+    if (cy > 2.5) {
+      const moss = new THREE.Mesh(new THREE.CylinderGeometry(sx * 0.43, sx * 0.49, 0.58, 7), mossCapMat);
+      moss.position.set(cx, cy + sy * 0.46, cz + 0.15);
+      moss.rotation.y = ry;
+      moss.receiveShadow = true;
+      group.add(moss);
+    }
+  }
+
+  // Hanging cliff vines draping down the rock ledges
+  const vinePositions: Array<[number, number, number, number]> = [
+    [-3.1, 8.6, -0.8, 2.8],
+    [-4.8, 7.6, -0.4, 2.4],
+    [3.2, 8.8, -0.7, 3.1],
+    [4.9, 7.8, -0.2, 2.2],
+    [-1.7, 9.6, -1.3, 1.9],
+    [1.8, 9.5, -1.2, 2.1],
+  ];
+  for (let i = 0; i < vinePositions.length; i++) {
+    const [vx, vy, vz, len] = vinePositions[i];
+    const vine = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.025, len, 5), vineMat);
+    vine.position.set(vx, vy - len * 0.5, vz);
+    vine.rotation.z = Math.sin(i * 1.9) * 0.1;
+    group.add(vine);
+  }
+
+  // Upper spring basin feeding the main cascade
+  const upperBasin = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 2.7, 0.35, 16), upperPoolMat);
+  upperBasin.position.set(0, 9.9, -2.4);
+  group.add(upperBasin);
+
+  // 2) Multi-tier animated waterfall sheets with scrolling rushing-foam texture
+  const cascadeStrips: Array<{ mesh: THREE.Mesh; baseY: number; phase: number; amp: number }> = [];
+  const mainCurtain = new THREE.Mesh(new THREE.PlaneGeometry(3.7, 10.3, 4, 8), waterSheetMat);
+  mainCurtain.position.set(0, 4.95, -0.92);
+  mainCurtain.rotation.x = -0.11;
+  mainCurtain.renderOrder = 3;
+  group.add(mainCurtain);
+  cascadeStrips.push({ mesh: mainCurtain, baseY: 4.95, phase: 0, amp: 0.08 });
+
+  const sideCurtainL = new THREE.Mesh(new THREE.PlaneGeometry(1.48, 7.7, 2, 6), waterSheetMat);
+  sideCurtainL.position.set(-2.35, 3.72, -0.32);
+  sideCurtainL.rotation.set(-0.14, 0.22, 0.04);
+  sideCurtainL.renderOrder = 3;
+  group.add(sideCurtainL);
+  cascadeStrips.push({ mesh: sideCurtainL, baseY: 3.72, phase: 1.7, amp: 0.07 });
+
+  const sideCurtainR = new THREE.Mesh(new THREE.PlaneGeometry(1.26, 6.9, 2, 6), waterSheetMat);
+  sideCurtainR.position.set(2.3, 3.35, -0.22);
+  sideCurtainR.rotation.set(-0.13, -0.24, -0.04);
+  sideCurtainR.renderOrder = 3;
+  group.add(sideCurtainR);
+  cascadeStrips.push({ mesh: sideCurtainR, baseY: 3.35, phase: 3.1, amp: 0.07 });
+
+  // Vertical foaming white-water streaks falling down the cascade
+  const foamStreaks: Array<{ mesh: THREE.Mesh; speed: number; offset: number; x: number; z: number; maxH: number }> = [];
+  const streakGeo = new THREE.PlaneGeometry(0.4, 1.95);
+  for (let i = 0; i < 10; i++) {
+    const isSide = i >= 7;
+    const sx = isSide ? (i % 2 === 0 ? -2.3 : 2.25) : -1.4 + (i / 6) * 2.8;
+    const sz = isSide ? -0.1 : -0.74 + Math.abs(sx) * 0.06;
+    const streak = new THREE.Mesh(streakGeo, foamMat);
+    streak.position.set(sx, 2 + (i % 5) * 1.6, sz);
+    streak.rotation.x = -0.12;
+    streak.renderOrder = 4;
+    group.add(streak);
+    foamStreaks.push({
+      mesh: streak,
+      speed: 4.9 + (i % 4) * 1.15,
+      offset: i * 1.37,
+      x: sx,
+      z: sz,
+      maxH: isSide ? 6.6 : 9.4,
+    });
+  }
+
+  // 3) Soft Edge-Feathered & Sun-Glinting Plunge Pool (eliminates hard flat circle seam!)
+  const plungeWater = createStylizedWaterMaterial({
+    shallowHex: 0x5be8df,
+    deepHex: 0x1078a6,
+    foamHex: 0xf4feff,
+    waveScale: 0.65,
+    sunReflectStrength: 1.4,
+  });
+
+  const poolGeom = new THREE.PlaneGeometry(16.8, 15.2, 28, 28);
+  poolGeom.rotateX(-Math.PI / 2);
+  const pPos = poolGeom.attributes.position as THREE.BufferAttribute;
+  const pDepths = new Float32Array(pPos.count);
+  const pFades = new Float32Array(pPos.count);
+  for (let i = 0; i < pPos.count; i++) {
+    const lx = pPos.getX(i);
+    const lz = pPos.getZ(i);
+    // Organic elliptical basin radius with gentle shoreline undulation
+    const angle = Math.atan2(lz, lx);
+    const organicRim = 1 + Math.sin(angle * 3 + 0.6) * 0.08 + Math.cos(angle * 5 - 0.4) * 0.05;
+    const normDist = Math.hypot(lx / (7.2 * organicRim), lz / (6.3 * organicRim));
+    // Deepest right under the waterfall impact, shoaling cleanly to 0 at shoreline
+    const basinDepth = Math.max(-0.18, (1 - normDist * normDist) * 2.15);
+    pDepths[i] = basinDepth;
+    pFades[i] = Math.max(0, Math.min(1, (1.02 - normDist) / 0.24));
+  }
+  poolGeom.setAttribute('aDepth', new THREE.BufferAttribute(pDepths, 1));
+  poolGeom.setAttribute('aEdgeFade', new THREE.BufferAttribute(pFades, 1));
+
+  const plungePool = new THREE.Mesh(poolGeom, plungeWater.material);
+  plungePool.position.set(0, 0.14, 3.4);
+  plungePool.renderOrder = 2;
+  group.add(plungePool);
+
+  // Expanding plunge ripple rings
+  const rippleRings: Array<{ mesh: THREE.Mesh; phase: number; mat: THREE.MeshBasicMaterial }> = [];
+  for (let i = 0; i < 3; i++) {
+    const rMat = new THREE.MeshBasicMaterial({
+      color: 0xe6faff,
+      transparent: true,
+      opacity: 0.52,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.92, 1.28, 28), rMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(0, 0.19 + i * 0.01, 0.35);
+    ring.renderOrder = 3;
+    group.add(ring);
+    rippleRings.push({ mesh: ring, phase: i / 3, mat: rMat });
+  }
+
+  // Soft sunlit waterfall rainbow mist arc suspended in the spray
+  const rainbowTex = createRainbowMistTexture();
+  const rainbowMat = new THREE.MeshBasicMaterial({
+    map: rainbowTex,
+    transparent: true,
+    opacity: 0.48,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const rainbowGeo = new THREE.RingGeometry(2.6, 3.65, 28, 1, 0.18, Math.PI - 0.36);
+  const rainbowMesh = new THREE.Mesh(rainbowGeo, rainbowMat);
+  rainbowMesh.position.set(0.35, 1.35, 1.35);
+  rainbowMesh.rotation.set(-0.12, 0.15, 0);
+  rainbowMesh.renderOrder = 4;
+  group.add(rainbowMesh);
+
+  // Soft rising spray mist puffs
+  const mistPuffs: Array<{ mesh: THREE.Mesh; baseX: number; baseZ: number; phase: number }> = [];
+  const mistGeo = new THREE.DodecahedronGeometry(0.84, 1);
+  const mistMat = new THREE.MeshBasicMaterial({
+    color: 0xf0fbff,
+    transparent: true,
+    opacity: 0.3,
+    depthWrite: false,
+  });
+  for (let i = 0; i < 9; i++) {
+    const puff = new THREE.Mesh(mistGeo, mistMat);
+    const bx = (i - 4) * 0.8;
+    const bz = -0.15 + (i % 3) * 0.62;
+    puff.position.set(bx, 0.6, bz);
+    puff.renderOrder = 4;
+    group.add(puff);
+    mistPuffs.push({ mesh: puff, baseX: bx, baseZ: bz, phase: i * 0.78 });
+  }
+
+  // Floating water lily pads & lotus blossoms on the tranquil plunge pool
+  const lilyPadMat = new THREE.MeshStandardMaterial({ color: 0x388e3c, roughness: 0.72 });
+  const lotusPinkMat = new THREE.MeshStandardMaterial({
+    color: 0xf9a8d4,
+    emissive: 0x5c1d3d,
+    emissiveIntensity: 0.22,
+    roughness: 0.6,
+  });
+  const lotusWhiteMat = new THREE.MeshStandardMaterial({
+    color: 0xfff8f0,
+    emissive: 0x5c4b32,
+    emissiveIntensity: 0.18,
+    roughness: 0.6,
+  });
+  const lilyCoords: Array<[number, number, number, boolean]> = [
+    [-3.1, 3.8, 0.58, true],
+    [-2.4, 4.7, 0.44, false],
+    [3.2, 4.1, 0.56, true],
+    [2.6, 5.1, 0.42, false],
+    [-3.8, 2.2, 0.48, false],
+    [3.9, 2.5, 0.5, true],
+  ];
+  const lilyPads: Array<{ group: THREE.Group; baseY: number; phase: number }> = [];
+  const padGeo = new THREE.CylinderGeometry(1, 1, 0.04, 12, 1, false, 0.22, Math.PI * 1.88);
+  for (let i = 0; i < lilyCoords.length; i++) {
+    const [lx, lz, sc, hasFlower] = lilyCoords[i];
+    const lg = new THREE.Group();
+    lg.position.set(lx, 0.18, lz);
+    lg.rotation.y = i * 1.35;
+    const pad = new THREE.Mesh(padGeo, lilyPadMat);
+    pad.scale.set(sc, 1, sc);
+    lg.add(pad);
+    if (hasFlower) {
+      const fMat = i % 2 === 0 ? lotusPinkMat : lotusWhiteMat;
+      const center = new THREE.Mesh(new THREE.SphereGeometry(0.11, 7, 6), lanternGlowMat);
+      center.position.y = 0.08;
+      lg.add(center);
+      for (let p = 0; p < 5; p++) {
+        const ang = (p / 5) * Math.PI * 2;
+        const petal = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.22, 5), fMat);
+        petal.position.set(Math.cos(ang) * 0.14, 0.1, Math.sin(ang) * 0.14);
+        petal.rotation.set(Math.sin(ang) * 0.65, 0, -Math.cos(ang) * 0.65);
+        lg.add(petal);
+      }
+    }
+    group.add(lg);
+    lilyPads.push({ group: lg, baseY: 0.18, phase: i * 1.2 });
+  }
+
+  // 4) Scenic wooden arch bridge spanning the lower pool outlet + glowing stone lanterns
+  const bridgeGroup = new THREE.Group();
+  bridgeGroup.position.set(0, 0.42, 7.6);
+  for (let p = -3; p <= 3; p++) {
+    const archY = Math.cos((p / 3.4) * Math.PI * 0.5) * 0.58;
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.14, 2.25), woodMat);
+    plank.position.set(p * 1.05, archY, 0);
+    plank.rotation.z = -p * 0.08;
+    bridgeGroup.add(plank);
+  }
+  for (const side of [-1, 1]) {
+    for (const px of [-3.1, 0, 3.1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.05, 0.16), woodMat);
+      post.position.set(px, px === 0 ? 0.95 : 0.52, side * 1.02);
+      bridgeGroup.add(post);
+    }
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(6.6, 0.11, 0.11), woodMat);
+    rail.position.set(0, 1.28, side * 1.02);
+    bridgeGroup.add(rail);
+  }
+  group.add(bridgeGroup);
+
+  // Pair of warm mossy stone lanterns flanking the bridge
+  for (const side of [-1, 1]) {
+    const lx = side * 4.4;
+    const lz = 6.2;
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.42, 1.15, 6), darkSlateMat);
+    base.position.set(lx, 0.6, lz);
+    group.add(base);
+    const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.42, 0.38), lanternGlowMat);
+    bulb.position.set(lx, 1.35, lz);
+    group.add(bulb);
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(0.55, 0.36, 6), darkSlateMat);
+    cap.position.set(lx, 1.72, lz);
+    group.add(cap);
+  }
+
+  // 5) Flanking cliff-top blossom & pine trees for rich silhouette framing
+  const addCliffTree = (tx: number, ty: number, tz: number, blossom: boolean, scale = 1) => {
+    const tree = new THREE.Group();
+    tree.position.set(tx, ty, tz);
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18 * scale, 0.28 * scale, 2.6 * scale, 6), woodMat);
+    trunk.position.y = 1.3 * scale;
+    tree.add(trunk);
+    if (blossom) {
+      const crown1 = new THREE.Mesh(new THREE.DodecahedronGeometry(1.55 * scale, 1), blossomMat);
+      crown1.position.set(0, 2.9 * scale, 0);
+      tree.add(crown1);
+      const crown2 = new THREE.Mesh(new THREE.DodecahedronGeometry(1.05 * scale, 1), blossomMat);
+      crown2.position.set(0.8 * scale, 2.5 * scale, 0.4 * scale);
+      tree.add(crown2);
+      const crown3 = new THREE.Mesh(new THREE.DodecahedronGeometry(0.92 * scale, 1), blossomMat);
+      crown3.position.set(-0.75 * scale, 2.4 * scale, -0.35 * scale);
+      tree.add(crown3);
+    } else {
+      for (let c = 0; c < 3; c++) {
+        const cone = new THREE.Mesh(
+          new THREE.ConeGeometry((1.5 - c * 0.32) * scale, (1.85 - c * 0.2) * scale, 7),
+          pineMat,
+        );
+        cone.position.y = (2.1 + c * 1.1) * scale;
+        tree.add(cone);
+      }
+    }
+    group.add(tree);
+  };
+
+  addCliffTree(-4.3, 8.8, -2.4, true, 1.18);
+  addCliffTree(4.6, 9.0, -2.1, false, 1.18);
+  addCliffTree(-6.5, 5.1, 1.4, false, 1.0);
+  addCliffTree(6.3, 5.4, 1.6, true, 1.08);
+  addCliffTree(-2.2, 10.6, -4.5, false, 0.92);
+  addCliffTree(2.4, 10.5, -4.4, true, 0.96);
+
+  // 6) Natural mossy shoreline boulders & cattail reeds wrapping the plunge pool edge
+  const reedStemMat = new THREE.MeshStandardMaterial({ color: 0x4c8a3d, roughness: 0.85 });
+  const reedTipMat = new THREE.MeshStandardMaterial({ color: 0x6b4426, roughness: 0.9 });
+  const reedClumps: Array<{ group: THREE.Group; phase: number }> = [];
+
+  for (let i = 0; i < 12; i++) {
+    const ang = -Math.PI * 0.16 + (i / 11) * Math.PI * 1.32;
+    const r = 6.3 + (i % 2) * 0.95;
+    const bx = Math.cos(ang) * r;
+    const bz = 3.2 + Math.sin(ang) * r * 0.78;
+    const b = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.62 + (i % 3) * 0.26, 0),
+      i % 3 === 0 ? wetRockMat : i % 2 === 0 ? cliffStoneMat : darkSlateMat,
+    );
+    b.position.set(bx, 0.24, bz);
+    b.scale.set(1.25, 0.62, 1.05);
+    b.rotation.y = i * 0.7;
+    group.add(b);
+
+    // Tuck swaying lakeside reeds next to every other boulder
+    if (i % 2 === 1) {
+      const clump = new THREE.Group();
+      clump.position.set(bx * 0.92, 0.1, bz * 0.94);
+      for (let s = 0; s < 4; s++) {
+        const h = 0.85 + (s % 3) * 0.28;
+        const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.032, h, 4), reedStemMat);
+        stem.position.set((s - 1.5) * 0.12, h * 0.5, (s % 2) * 0.1);
+        stem.rotation.z = (s - 1.5) * 0.09;
+        clump.add(stem);
+        if (s % 2 === 0) {
+          const tip = new THREE.Mesh(new THREE.CapsuleGeometry(0.042, 0.18, 3, 5), reedTipMat);
+          tip.position.set((s - 1.5) * 0.13, h - 0.12, (s % 2) * 0.1);
+          clump.add(tip);
+        }
+      }
+      group.add(clump);
+      reedClumps.push({ group: clump, phase: i * 0.9 });
+    }
+  }
+
+  // 7) Drifting sunlit cherry blossom petals across the waterfall valley
+  const petalMat = new THREE.MeshBasicMaterial({
+    color: 0xffcce5,
+    transparent: true,
+    opacity: 0.82,
+    side: THREE.DoubleSide,
+  });
+  const petalGeo = new THREE.PlaneGeometry(0.14, 0.09);
+  const petals: Array<{
+    mesh: THREE.Mesh;
+    baseX: number;
+    baseY: number;
+    baseZ: number;
+    speed: number;
+    phase: number;
+  }> = [];
+  for (let i = 0; i < 16; i++) {
+    const pm = new THREE.Mesh(petalGeo, petalMat);
+    const bx = (Math.random() - 0.5) * 14;
+    const by = 2.5 + Math.random() * 8.5;
+    const bz = -1.5 + Math.random() * 10;
+    pm.position.set(bx, by, bz);
+    group.add(pm);
+    petals.push({
+      mesh: pm,
+      baseX: bx,
+      baseY: by,
+      baseZ: bz,
+      speed: 0.45 + Math.random() * 0.45,
+      phase: Math.random() * Math.PI * 2,
+    });
+  }
+
+  const update = (
+    dt: number,
+    elapsed: number,
+    reducedEffects = false,
+    envLight?: WaterfallEnvLight,
+  ) => {
+    // Scroll rushing foam texture down the waterfall sheets
+    flowTex.offset.y = (elapsed * 0.95) % 1;
+
+    // Sync plunge pool water shader with live sun reflection & fog
+    const pu = plungeWater.uniforms;
+    pu.uTime.value = elapsed;
+    if (envLight) {
+      pu.uSunDir.value.copy(envLight.sunDir);
+      pu.uSunColor.value.copy(envLight.sunColor);
+      pu.uSkyHorizon.value.copy(envLight.skyHorizon);
+      pu.uSkyZenith.value.copy(envLight.skyZenith);
+      pu.uFogColor.value.copy(envLight.fogColor);
+      pu.uFogDensity.value = envLight.fogDensity;
+      pu.uNightFactor.value = envLight.nightFactor;
+
+      // Rainbow mist glows warmly during sunny daytime and fades gently at night
+      const daySun = Math.max(0, 1 - envLight.nightFactor * 1.45) * Math.max(0, Math.min(1, envLight.sunDir.y * 2.6));
+      rainbowMesh.visible = !reducedEffects && daySun > 0.08;
+      rainbowMat.opacity = daySun * (0.42 + Math.sin(elapsed * 0.8) * 0.05);
+    }
+
+    for (let i = 0; i < cascadeStrips.length; i++) {
+      const strip = cascadeStrips[i];
+      strip.mesh.scale.x = 1 + Math.sin(elapsed * 4.2 + strip.phase) * 0.03;
+      strip.mesh.position.y = strip.baseY + Math.sin(elapsed * 7.2 + strip.phase) * strip.amp;
+    }
+
+    for (let i = 0; i < foamStreaks.length; i++) {
+      const st = foamStreaks[i];
+      if (reducedEffects && i >= 5) {
+        st.mesh.visible = false;
+        continue;
+      }
+      st.mesh.visible = true;
+      const cycle = ((elapsed * st.speed + st.offset) % st.maxH) / st.maxH;
+      st.mesh.position.y = st.maxH * (1 - cycle) + 0.5;
+      st.mesh.scale.y = 0.72 + cycle * 0.72;
+    }
+
+    for (let i = 0; i < rippleRings.length; i++) {
+      const rr = rippleRings[i];
+      const p = (elapsed * 0.54 + rr.phase) % 1;
+      const scale = 0.65 + p * 3.8;
+      rr.mesh.scale.set(scale, scale, 1);
+      rr.mat.opacity = (1 - p) * 0.5;
+    }
+
+    for (let i = 0; i < mistPuffs.length; i++) {
+      const mp = mistPuffs[i];
+      if (reducedEffects && i >= 3) {
+        mp.mesh.visible = false;
+        continue;
+      }
+      mp.mesh.visible = true;
+      const p = (elapsed * 0.48 + mp.phase) % 1;
+      mp.mesh.position.set(
+        mp.baseX + Math.sin(elapsed * 1.3 + mp.phase) * 0.48,
+        0.35 + p * 2.5,
+        mp.baseZ + p * 1.45,
+      );
+      const s = 0.55 + Math.sin(p * Math.PI) * 1.08;
+      mp.mesh.scale.setScalar(s);
+    }
+
+    // Gentle bobbing lily pads & swaying lakeside reeds
+    for (let i = 0; i < lilyPads.length; i++) {
+      const lp = lilyPads[i];
+      lp.group.position.y = lp.baseY + Math.sin(elapsed * 1.7 + lp.phase) * 0.025;
+      lp.group.rotation.z = Math.sin(elapsed * 1.3 + lp.phase) * 0.03;
+    }
+    for (let i = 0; i < reedClumps.length; i++) {
+      const rc = reedClumps[i];
+      rc.group.rotation.z = Math.sin(elapsed * 1.85 + rc.phase) * 0.065;
+      rc.group.rotation.x = Math.cos(elapsed * 1.35 + rc.phase) * 0.04;
+    }
+
+    // Drifting cherry blossom petals
+    for (let i = 0; i < petals.length; i++) {
+      const pt = petals[i];
+      if (reducedEffects && i >= 6) {
+        pt.mesh.visible = false;
+        continue;
+      }
+      pt.mesh.visible = true;
+      const fallCycle = ((elapsed * pt.speed + pt.phase) % 10) / 10;
+      pt.mesh.position.set(
+        pt.baseX + Math.sin(elapsed * 1.1 + pt.phase) * 1.6 - fallCycle * 2.2,
+        10.5 - fallCycle * 9.8,
+        pt.baseZ + Math.cos(elapsed * 0.9 + pt.phase) * 1.4 + fallCycle * 1.5,
+      );
+      pt.mesh.rotation.x += dt * 1.4;
+      pt.mesh.rotation.y += dt * 1.1;
+    }
+  };
+
+  const colliders: StaticCollider[] = [
+    { shape: 'circle', x: x + 2.4, z: z - 2.6, radius: 4.8 },
+    { shape: 'circle', x: x - 1.5, z: z - 4.2, radius: 3.4 },
+    { shape: 'circle', x: x + 4.8, z: z + 0.4, radius: 3.2 },
+  ];
+
+  return {
+    group,
+    focalX: x - 1.5,
+    focalY: baseY + 4.8,
+    focalZ: z + 1.5,
+    colliders,
+    update,
+  };
+}
+
 
 
 
